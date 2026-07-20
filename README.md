@@ -262,7 +262,7 @@ documented before the next one starts.
 | --- | --- | --- |
 | 01 | Repository foundation: parent POM, modules, docs skeleton | **Complete** |
 | 02 | Infrastructure: Docker Compose, networks, volumes, healthchecks | **Complete** |
-| 03 | Shared library: DTOs, exceptions, correlation, MDC, base entities | Planned |
+| 03 | Shared library: DTOs, exceptions, correlation, MDC, base entities | **Complete** |
 | 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | Planned |
 | 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | Planned |
 | 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | Planned |

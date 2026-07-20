@@ -90,12 +90,26 @@ business logic testable and the technology swappable.
 
 | Package | Contents |
 | --- | --- |
-| `shared.api` | `ApiResponse<T>` envelope, `ApiError`, pagination models |
-| `shared.exception` | Base exception hierarchy and the global exception handler |
-| `shared.correlation` | Correlation id, request id, MDC lifecycle, filters and interceptors |
-| `shared.tracing` | Helpers for reading and enriching the active span |
-| `shared.persistence` | `BaseEntity`, `AuditableEntity`, auditing configuration |
-| `shared.util` | Validation and general-purpose helpers |
+| `shared.api` | `ApiResponse<T>` envelope, `ApiError`, `FieldViolation`, `ResponseMeta`, `PageResponse<T>` |
+| `shared.exception` | `ErrorCategory`, `ErrorCode`, the `BaseException` hierarchy, `ErrorResponseFactory` and the advice classes |
+| `shared.correlation` | `ServiceIdentity`, correlation and request ids, `CorrelationFilter`, MDC lifecycle and `MdcTaskDecorator` |
+| `shared.tracing` | `TraceParent` (W3C parsing) and `TraceContext` |
+| `shared.logging` | `LogContext`, a scoped set of extra structured log fields |
+| `shared.persistence` | `BaseEntity`, `AuditableEntity`, `CorrelationAuditorAware` |
+| `shared.util` | `Validations` (programmatic Bean Validation), `Masking` (redaction for logs) |
+| `shared.autoconfigure` | Spring Boot auto-configuration, so a service gets the behaviour by depending on the module |
+
+**Dependency policy.** Every Spring dependency except `spring-boot-starter` is declared
+`<optional>true</optional>`: available to compile and test this module, not propagated to consumers.
+A library that forces JPA onto a service which only speaks HTTP is a library that dictates
+architecture. Auto-configuration activates per capability, based on what it finds on the consuming
+service's classpath.
+
+Splitting conditions per capability is not optional detail. An earlier revision gated the whole
+exception configuration on `jakarta.validation`; a service declaring only `spring-boot-starter-web`
+then got *no* handler and fell back to the framework's whitelabel error body — no error code, no
+trace id, no envelope, and nothing logged to say so. The core handler now depends only on Spring MVC,
+and only the Bean Validation advice is conditional.
 
 ## 3. Naming conventions
 
@@ -228,22 +242,37 @@ their UIs and query APIs are published to the host.
 
 ### 6.1 Error model and HTTP mapping
 
-| Exception | HTTP | Log level | Meaning |
-| --- | --- | --- | --- |
-| `ValidationException` | 400 | `WARN` | The request is malformed. The caller must change something. |
-| `AuthenticationException` | 401 | `WARN` | Missing or invalid token. |
-| `AccessDeniedException` | 403 | `WARN` | Valid token, insufficient role. |
-| `ResourceNotFoundException` | 404 | `WARN` | The addressed resource does not exist. |
-| `BusinessException` | 409 / 422 | `INFO` | A rule was correctly enforced — insufficient stock, illegal status transition. **Not** an error. |
-| `IntegrationException` | 502 / 504 | `ERROR` | A downstream dependency failed or timed out. |
-| `TechnicalException` | 500 | `ERROR` | Anything unexpected. Always logged with a stack trace. |
+An exception carries an `ErrorCode`, which carries an `ErrorCategory`. The category — not the
+exception type — decides the status code and the log level, so adding a failure mode means declaring
+a code, never editing the handler.
+
+| Category | Exception | HTTP | Log level | Meaning |
+| --- | --- | --- | --- | --- |
+| `VALIDATION` | `ValidationException` | 400 | `WARN` | The request is malformed. The caller must change something. |
+| `AUTHENTICATION` | `UnauthorizedException` | 401 | `WARN` | Missing or invalid token. |
+| `AUTHORIZATION` | `ForbiddenException` | 403 | `WARN` | Valid token, insufficient role. |
+| `NOT_FOUND` | `ResourceNotFoundException` | 404 | `WARN` | The addressed resource does not exist. |
+| `CONFLICT` | `BusinessException` | 409 | `INFO` | The request conflicts with current state. |
+| `BUSINESS_RULE` | `BusinessException` | 422 | `INFO` | A rule was correctly enforced — insufficient stock, illegal status transition. **Not** an error. |
+| `INTEGRATION` | `IntegrationException.failed` | 502 | `ERROR` | A downstream dependency failed. |
+| `TIMEOUT` | `IntegrationException.timedOut` | 504 | `ERROR` | A downstream dependency did not answer in time. |
+| `TECHNICAL` | `TechnicalException` | 500 | `ERROR` | Anything unexpected. Always logged with a stack trace. |
+
+`UnauthorizedException` and `ForbiddenException` are named to avoid colliding with Spring Security's
+`AuthenticationException` and `AccessDeniedException`. Two types with one simple name in a codebase
+guarantees somebody eventually imports the wrong one and catches nothing.
 
 **Why the log level matters.** "Insufficient stock" is the system working. Logging it at `ERROR`
 would train operators to ignore `ERROR`, and would make any alert built on error rate useless. The
-level is a design decision, not a formatting one.
+level is a design decision, not a formatting one. Only a fault on our side of the boundary
+(`INTEGRATION`, `TIMEOUT`, `TECHNICAL`) is logged with a stack trace.
 
-Error codes are namespaced per context (`ORD-`, `INV-`) so a code identifies its owner unambiguously
-in a shared log store.
+**Server faults never return their message.** A connection string or internal hostname in an
+exception message would otherwise become a 500 body and then a client-side log entry. The caller
+receives the code, the generic message and the trace id; the detail stays in the logs.
+
+Error codes are namespaced per context (`ORD-`, `INV-`, and `PLT-` for platform-level failures) so a
+code identifies its owner unambiguously in a shared log store.
 
 ## 7. Resilience design
 
