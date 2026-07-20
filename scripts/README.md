@@ -11,6 +11,7 @@ to run from any working directory, and resolves its own toolchain rather than tr
 | `build.sh` | Builds all Maven modules against a JDK 21 toolchain. Extra arguments are forwarded to Maven. |
 | `infra.sh` | Drives the Docker infrastructure stack: start, stop, health, logs, destroy. Unrecognised commands pass through to `docker compose`. |
 | `run-service.sh` | Runs a service against the running stack, reading the effective ports from `docker/compose/.env` so a remapped stack still connects correctly. |
+| `gateway.sh` | Validates, reloads and inspects the edge: Kong's routes, plugins and upstream target health. |
 | `toolchain.sh` | Sourced helper that resolves a JDK 21+ into `JAVA_HOME`. Not executed directly. |
 
 ## Usage

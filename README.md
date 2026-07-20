@@ -250,25 +250,45 @@ Starts on port 8082 against Oracle, and consumes `order-created` from Kafka.
 | `POST /api/v1/stock/{productSku}/adjust` | Operator correction. |
 | `DELETE /api/v1/stock/{productSku}` | Stop tracking. Refused while units are reserved. |
 
+### Through the gateway
+
+Since step 06 the intended entry point is the edge on port 80, not the service ports:
+
+```
+client ──► Nginx :80 ──► Kong :8000 ──► order-service :8081
+                                    └─► inventory-service :8082
+```
+
+Nginx owns request identity and security headers; Kong owns routing, rate limiting and upstream
+health checking. The service ports stay bound to `127.0.0.1` and are for operators — calling them
+directly skips every gateway policy.
+
+```bash
+./scripts/gateway.sh status      # routes, plugins, upstream health
+```
+
 ### Seeing both services work together
 
-With the stack and both services running:
+With the stack and both services running, everything goes through the edge:
 
 ```bash
 # Track a product
-curl -X POST http://localhost:8082/api/v1/stock \
+curl -X POST http://localhost/api/v1/stock \
   -H 'Content-Type: application/json' \
   -d '{"productSku":"SKU-1","initialQuantity":100}'
 
 # Place an order for it
-curl -X POST http://localhost:8081/api/v1/orders \
+curl -X POST http://localhost/api/v1/orders \
   -H 'Content-Type: application/json' \
   -d '{"customerId":"C-1","currency":"EUR",
        "items":[{"productSku":"SKU-1","quantity":2,"unitPrice":10.50}]}'
 
 # The Inventory Service consumed order-created and reserved the units
-curl http://localhost:8082/api/v1/stock/SKU-1
+curl http://localhost/api/v1/stock/SKU-1
 ```
+
+`/actuator` is deliberately not routed through the gateway — health detail and metrics describe
+internal topology, so they stay on the service port.
 
 Every response carries `meta.requestId`, `meta.correlationId` and `meta.traceId`.
 
@@ -324,7 +344,7 @@ documented before the next one starts.
 | 03 | Shared library: DTOs, exceptions, correlation, MDC, base entities | **Complete** |
 | 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | **Complete** |
 | 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | **Complete** |
-| 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | Planned |
+| 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | **Complete** |
 | 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | Planned |
 | 08 | Service discovery: Consul registration, health, KV configuration | Planned |
 | 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | Planned |

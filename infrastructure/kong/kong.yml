@@ -3,21 +3,214 @@
 #
 # In DB-less mode this file IS the gateway's entire state. Nothing can be
 # changed by poking the admin API, so the routing and policy a request passes
-# through is always exactly what is in version control.
+# through is always exactly what is in version control and what a reviewer saw.
 #
-# The gateway currently declares no routes: it accepts connections, reports
-# healthy, and returns 404 for everything. Routing to the services, JWT
-# verification against Keycloak and rate limiting are added in step 06, and
-# they land here rather than in a database migration.
+# Reload after editing:  ./scripts/gateway.sh reload
+# Validate before that:  ./scripts/gateway.sh validate
 # ---------------------------------------------------------------------------
 _format_version: "3.0"
 
-# Upstream services proxied by the gateway.
-services: []
+# ---------------------------------------------------------------------------
+# Upstreams
+#
+# Named upstreams rather than a hostname on the service, because that is what
+# gives Kong somewhere to hang health checks. A service pointed straight at a
+# host has no notion of the target being up or down; an upstream does, and stops
+# sending traffic to a target that is failing.
+#
+# Targets are host.docker.internal because the services currently run on the
+# developer's machine while Kong runs in a container. Once the services are
+# containerised this becomes their compose service name and nothing else here
+# changes - which is the other reason the address lives in exactly one place.
+# ---------------------------------------------------------------------------
+upstreams:
+  - name: order-service.upstream
+    targets:
+      - target: host.docker.internal:8081
+        weight: 100
+    healthchecks:
+      active:
+        type: http
+        # The readiness probe, not the liveness one. Liveness answers "should
+        # this be restarted"; readiness answers "should traffic be sent here",
+        # which is precisely the question a load balancer is asking.
+        http_path: /actuator/health/readiness
+        concurrency: 2
+        timeout: 2
+        healthy:
+          interval: 10
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          tcp_failures: 3
+          timeouts: 3
+          http_statuses: [429, 500, 502, 503, 504]
+      passive:
+        healthy:
+          successes: 3
+          # 4xx counts as healthy on purpose. A 404 or a 422 from these services
+          # is a correct answer to a bad request, not a sign the upstream is
+          # broken; treating them as failures would take a perfectly healthy
+          # service out of rotation the moment clients started sending rubbish.
+          http_statuses: [200, 201, 202, 204, 400, 401, 403, 404, 409, 422]
+        unhealthy:
+          http_failures: 5
+          timeouts: 3
+          http_statuses: [500, 502, 503, 504]
 
-# Globally applied plugins. Per-service plugins are declared inline on the
-# service they belong to.
-plugins: []
+  - name: inventory-service.upstream
+    targets:
+      - target: host.docker.internal:8082
+        weight: 100
+    healthchecks:
+      active:
+        type: http
+        http_path: /actuator/health/readiness
+        concurrency: 2
+        timeout: 2
+        healthy:
+          interval: 10
+          successes: 2
+          http_statuses: [200]
+        unhealthy:
+          interval: 5
+          http_failures: 3
+          tcp_failures: 3
+          timeouts: 3
+          http_statuses: [429, 500, 502, 503, 504]
+      passive:
+        healthy:
+          successes: 3
+          http_statuses: [200, 201, 202, 204, 400, 401, 403, 404, 409, 422]
+        unhealthy:
+          http_failures: 5
+          timeouts: 3
+          http_statuses: [500, 502, 503, 504]
 
-# JWT credentials are bound to consumers; they arrive with authentication.
+# ---------------------------------------------------------------------------
+# Services and routes
+#
+# Only the business APIs are routed. /actuator is deliberately absent: health
+# detail, environment properties and metrics describe internal topology and
+# have no business being reachable from outside. Operators reach them on the
+# service port directly, which is bound to loopback.
+# ---------------------------------------------------------------------------
+services:
+  - name: order-service
+    host: order-service.upstream
+    protocol: http
+    port: 8081
+    # Shorter than the service's own budget so a hung upstream surfaces here as
+    # a gateway timeout rather than as a client sitting on an open socket.
+    connect_timeout: 2000
+    write_timeout: 15000
+    read_timeout: 15000
+    # Only for connection-level failures; Kong does not retry a request that the
+    # upstream already answered, so this cannot replay a POST that succeeded.
+    retries: 2
+    routes:
+      - name: orders
+        paths:
+          - /api/v1/orders
+        # The service owns the full path. Stripping it would make the gateway's
+        # routing table part of the service's URL contract.
+        strip_path: false
+        methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+        preserve_host: false
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 120
+          hour: 3000
+          # Counters live in this node's memory. Correct because the lab runs a
+          # single Kong node; a cluster would need the redis policy so that
+          # nodes share a count instead of each allowing the full quota.
+          policy: local
+          # If the counter store fails, let traffic through rather than refusing
+          # every request. An outage of the limiter must not become an outage.
+          fault_tolerant: true
+          hide_client_headers: false
+      - name: request-transformer
+        config:
+          remove:
+            headers:
+              # The services trust X-User-Id as the authenticated subject, so a
+              # client must never be able to set it. Removing it at the gateway
+              # is what makes that trust safe. The JWT plugin will set it from a
+              # verified token.
+              - X-User-Id
+
+  - name: inventory-service
+    host: inventory-service.upstream
+    protocol: http
+    port: 8082
+    connect_timeout: 2000
+    write_timeout: 15000
+    read_timeout: 15000
+    retries: 2
+    routes:
+      - name: stock
+        paths:
+          - /api/v1/stock
+        strip_path: false
+        methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+        preserve_host: false
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 120
+          hour: 3000
+          policy: local
+          fault_tolerant: true
+          hide_client_headers: false
+      - name: request-transformer
+        config:
+          remove:
+            headers:
+              - X-User-Id
+
+# ---------------------------------------------------------------------------
+# Global plugins
+# ---------------------------------------------------------------------------
+plugins:
+  # Bounds the request body at the edge. Without it, the only thing standing
+  # between a client and the service's heap is the service's own parser.
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 1
+      size_unit: megabytes
+
+  # ---------------------------------------------------------------------------
+  # JWT verification.
+  #
+  # Declared and NOT enforcing. `enabled: false` is a deliberate, reviewable
+  # state rather than a placeholder: an enabled jwt plugin with no consumer
+  # holding a matching public key rejects every request with 401, and there is
+  # no realm issuing tokens yet.
+  #
+  # Step 07 creates the Keycloak realm, adds a consumer whose jwt_secret carries
+  # that realm's RSA public key under a `key` equal to the token's `iss` claim,
+  # and flips this to true. Nothing else in this file changes.
+  #
+  # The configuration below is real and is what will take effect:
+  #   - the issuer claim identifies which key to verify with
+  #   - exp is verified, so an expired token is refused rather than merely old
+  #   - the token is not passed upstream; services receive identity as headers
+  # ---------------------------------------------------------------------------
+  - name: jwt
+    enabled: false
+    config:
+      key_claim_name: iss
+      claims_to_verify:
+        - exp
+      run_on_preflight: false
+
+# ---------------------------------------------------------------------------
+# Consumers
+#
+# Populated in step 07 with the Keycloak realm's verification key. Empty here
+# rather than carrying an invented key that would have to be replaced.
+# ---------------------------------------------------------------------------
 consumers: []

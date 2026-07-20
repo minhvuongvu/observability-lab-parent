@@ -319,9 +319,23 @@ bring up only the slice they are studying. See [`docker/README.md`](../docker/RE
 
 ## 12. Current state
 
-Step 01 establishes the repository foundation: the parent POM and toolchain contract, three Maven
-modules, the directory skeleton, and this documentation. Both services start a Spring context and
-expose no endpoints yet.
+This document describes the target. What is actually running today:
 
-Everything else described above is the target the roadmap builds toward — see the step table in the
-[root README](../README.md).
+| Working | Notes |
+| --- | --- |
+| Both services, end to end | Order Service on PostgreSQL, Inventory Service on Oracle, each with CRUD, validation, caching and actuator |
+| The asynchronous half of the flow | Order publishes `order-created` after commit; Inventory consumes it idempotently and reserves stock |
+| The edge | Client → Nginx → Kong → service, with routing, rate limiting, upstream health checks and identity-header stripping |
+| Infrastructure | All ten components under Docker Compose with healthchecks and init scripts |
+
+Deliberately not yet true, despite being described above:
+
+| Not yet | Arrives in |
+| --- | --- |
+| **TLS at the edge.** Nginx serves plain HTTP. Every port binds to `127.0.0.1`, so TLS would encrypt a loopback hop while adding certificate handling that obscures the gateway behaviour. A deployment reachable from elsewhere terminates TLS at Nginx. | — |
+| **JWT enforcement.** The plugin is configured on the routes but not enforcing: there is no realm issuing tokens yet, and an enabled plugin with no verification key rejects everything. | Step 07 |
+| **Service discovery.** Kong addresses upstream targets statically; services do not register anywhere. | Step 08 |
+| **The reply leg of the flow.** Inventory records its decision but does not publish `inventory-updated`, so orders stay `PENDING` even when stock was reserved. Retries, the dead-letter topic and the transactional outbox are part of the same work. | Step 09 |
+| **The entire observability stack.** No collector, no metric or log or trace store, no dashboards. | Steps 10–14 |
+
+See the step table in the [root README](../README.md).

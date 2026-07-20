@@ -140,6 +140,11 @@ services:
       - "${BIND_HOST}:${KONG_PROXY_PORT}:8000"
       - "${BIND_HOST}:${KONG_ADMIN_PORT}:8001"
       - "${BIND_HOST}:${KONG_MANAGER_PORT}:8002"
+    extra_hosts:
+      # The upstream targets in kong.yml address the developer's machine, where
+      # the services currently run. Docker Desktop provides this name already;
+      # Linux does not, and without the mapping the gateway resolves nothing.
+      - "host.docker.internal:host-gateway"
     volumes:
       - ../../infrastructure/kong:/opt/kong:ro
     networks:

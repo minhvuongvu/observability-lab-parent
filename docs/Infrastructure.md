@@ -255,10 +255,56 @@ This step brings the components up. It does not configure what they do:
 
 | Deferred to | What arrives |
 | --- | --- |
-| Step 06 | Kong routes, rate limiting, JWT plugin; Nginx upstreams and TLS |
-| Step 07 | Keycloak realm, clients, roles, users |
+| Step 07 | Keycloak realm, clients, roles, users; the JWT plugin starts enforcing |
 | Step 08 | Consul service registration and KV configuration |
 | Step 10–13 | The entire observability stack |
 
-Kong currently declares an empty configuration and answers 404 for everything, and Nginx forwards
-nothing. Both are healthy and ready to receive their configuration.
+---
+
+## 10. The edge
+
+Since step 06 the gateway is configured and carrying traffic:
+
+```
+client ──► Nginx :80 ──► Kong :8000 ──► order-service :8081
+                                    └─► inventory-service :8082
+```
+
+| Component | Owns |
+| --- | --- |
+| **Nginx** | Network entry, request and correlation identity, security headers, body size ceiling, removal of spoofable identity headers |
+| **Kong** | Routing, rate limiting, upstream health checking, token verification |
+
+The split is deliberate: identity and transport belong to the outermost hop, API policy belongs one
+hop in. Configuration lives in [`infrastructure/nginx/`](../infrastructure/nginx) and
+[`infrastructure/kong/kong.yml`](../infrastructure/kong/kong.yml).
+
+```bash
+./scripts/gateway.sh status      # routes, plugins and upstream health
+./scripts/gateway.sh validate    # parse kong.yml without applying it
+./scripts/gateway.sh reload      # apply it, waiting until it is actually serving
+```
+
+### Things worth knowing
+
+**Every gateway configuration change is asynchronous.** Both `kong reload` and `POST /config` return
+once the master process has been signalled; the workers are respawned behind them, and for a short
+window the gateway is still serving the previous configuration. `gateway.sh reload` waits for Kong's
+`configuration_hash` to change before returning, precisely so that a test run straight afterwards
+does not silently exercise the old config and conclude the change did not work. The same applies to
+`nginx -s reload`, where existing keepalive connections continue to be served by old workers.
+
+**`/actuator` is not routed.** Health detail, environment properties and metrics describe internal
+topology. Operators reach them on the service port, which is bound to loopback.
+
+**Upstream targets are static.** Kong addresses `host.docker.internal:8081` and `:8082` because the
+services currently run on the developer's machine. This becomes a Compose service name once they are
+containerised, and a registry lookup once Consul is wired in at step 08.
+
+**Rate limit counters are per Kong node.** `policy: local` is correct for a single-node gateway; a
+cluster would need the `redis` policy, or each node would independently allow the whole quota.
+
+**Nothing protects the service ports.** Bypassing the gateway and calling `:8081` directly skips rate
+limiting and header stripping entirely — a spoofed `X-User-Id` sent straight to a service *is*
+honoured. That is exactly why those ports bind to `127.0.0.1` and why only Nginx is meant to be
+reachable.
