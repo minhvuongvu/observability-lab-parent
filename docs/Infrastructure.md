@@ -240,9 +240,22 @@ that establishes and then fails, because the broker hands back an address the cl
 **Port already in use.** Every port is a variable in `.env` — change it there, not in the compose
 file, so the override stays machine-local and out of version control. The defaults most likely to
 clash are **5432** and **6379** (a PostgreSQL or Redis installed natively, typically through
-Homebrew) and **8080** (another Keycloak, or any JVM application). Moving the lab is almost always
-better than stopping whatever already owns the port. `./scripts/infra.sh urls` prints the effective
-addresses, so it is the fastest way to see what a remapped stack actually listens on.
+Homebrew) and **8080** (another Keycloak, or any JVM application). On Windows, **80** is the usual
+casualty: IIS or the kernel HTTP stack normally holds it, so `NGINX_HTTP_PORT` is the first thing to
+change there. Moving the lab is almost always better than stopping whatever already owns the port.
+`./scripts/infra.sh urls` prints the effective addresses, so it is the fastest way to see what a
+remapped stack actually listens on.
+
+**An init script fails with `bad interpreter` or `^M`.** The file was checked out with Windows line
+endings and the container cannot run it. [`.gitattributes`](../.gitattributes) exists to prevent
+exactly this; if it is missing or was added after the clone, run `git add --renormalize . && git
+checkout .` to rewrite the working tree. The symptom is a database that comes up with no schema, or
+Kafka with no topics, and one line about it deep in a container log.
+
+**`docker exec` reports a path that does not exist, prefixed with `C:/Program Files/Git/`.** Git Bash
+rewrites arguments that look like absolute POSIX paths. The scripts here already set
+`MSYS_NO_PATHCONV=1`; a one-off command needs the same, or a leading double slash
+(`//opt/kong/kong.yml`).
 
 **`up` times out.** It prints the state of every container. Read the health column first, then
 `./scripts/infra.sh logs <service>` for whichever is not healthy.

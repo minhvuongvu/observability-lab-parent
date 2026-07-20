@@ -15,6 +15,14 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
+# Git Bash rewrites arguments that look like absolute POSIX paths into Windows
+# paths before handing them to a program, so `docker exec kong ... /opt/kong/kong.yml`
+# arrives inside the container as `C:/Program Files/Git/opt/kong/kong.yml` and
+# the file is reported missing. These disable that translation; they are ignored
+# everywhere else.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${REPO_ROOT}/docker/compose/.env"
@@ -24,6 +32,27 @@ NGINX_CONTAINER=lab-nginx
 DECLARATIVE_CONFIG=/opt/kong/kong.yml
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Runs the interpreter that actually works, for the admin-API formatting below.
+# macOS and Linux have `python3`; Windows has `python`, and there `python3` is a
+# Microsoft Store alias stub that prints "Python was not found" and exits
+# non-zero - so each candidate is probed by really executing it, not by mere
+# presence on PATH. Resolved lazily: `validate` needs no interpreter and must
+# keep working on a machine without one.
+py() {
+  if [ -z "${PYTHON:-}" ]; then
+    local candidate
+    for candidate in python3 python; do
+      if command -v "${candidate}" >/dev/null 2>&1 \
+          && "${candidate}" -c 'import sys' >/dev/null 2>&1; then
+        PYTHON="$(command -v "${candidate}")"
+        break
+      fi
+    done
+    [ -n "${PYTHON:-}" ] || die "a working Python 3 is required for this command but none was found."
+  fi
+  "${PYTHON}" "$@"
+}
 
 if [ -f "${ENV_FILE}" ]; then
   # shellcheck disable=SC1090
@@ -56,7 +85,7 @@ cmd_validate() {
 
 # Kong's DB-less fingerprint of the configuration currently being served.
 config_hash() {
-  admin /status 2>/dev/null | python3 -c '
+  admin /status 2>/dev/null | py -c '
 import json, sys
 print(json.load(sys.stdin).get("configuration_hash", ""))' 2>/dev/null || true
 }
@@ -101,7 +130,7 @@ cmd_reload() {
 
 cmd_routes() {
   require_kong
-  admin /routes | python3 -c '
+  admin /routes | py -c '
 import json, sys
 routes = json.load(sys.stdin)["data"]
 if not routes:
@@ -115,7 +144,7 @@ for r in sorted(routes, key=lambda x: x["name"] or ""):
 cmd_health() {
   require_kong
   local names name
-  names="$(admin /upstreams | python3 -c '
+  names="$(admin /upstreams | py -c '
 import json, sys
 print("\n".join(u["name"] for u in json.load(sys.stdin)["data"]))')"
 
@@ -126,7 +155,7 @@ print("\n".join(u["name"] for u in json.load(sys.stdin)["data"]))')"
 
   for name in ${names}; do
     echo "  ${name}"
-    admin "/upstreams/${name}/health" | python3 -c '
+    admin "/upstreams/${name}/health" | py -c '
 import json, sys
 for target in json.load(sys.stdin)["data"]:
     print("      %-34s %s" % (target["target"], target.get("health", "?")))'
@@ -135,7 +164,7 @@ for target in json.load(sys.stdin)["data"]:
 
 cmd_plugins() {
   require_kong
-  admin /plugins | python3 -c '
+  admin /plugins | py -c '
 import json, sys
 plugins = json.load(sys.stdin)["data"]
 if not plugins:

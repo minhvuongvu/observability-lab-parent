@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Line endings.
+#
+# Git for Windows defaults to core.autocrlf=true, which rewrites LF to CRLF on
+# checkout. That is harmless for a Windows text editor and fatal for this
+# repository: the init scripts under infrastructure/ are bind-mounted into Linux
+# containers and executed there, and a shebang that ends in CR fails with
+#
+#     /docker-entrypoint-initdb.d/01-init-databases.sh: /usr/bin/env^M: bad interpreter
+#
+# The databases then come up with no schema, Kafka with no topics, MinIO with no
+# bucket - and the error is one line deep in a container log.
+#
+# These rules override autocrlf, so a clone behaves identically on macOS, Linux
+# and Windows without anyone having to configure their client.
+# ---------------------------------------------------------------------------
+
+# Normalise every text file to LF in the repository and on checkout.
+* text=auto eol=lf
+
+# --- Executed or parsed inside Linux containers: LF is mandatory -----------
+*.sh          text eol=lf
+*.bash        text eol=lf
+*.sql         text eol=lf
+*.conf        text eol=lf
+*.hcl         text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.properties  text eol=lf
+*.json        text eol=lf
+Dockerfile    text eol=lf
+*.dockerfile  text eol=lf
+.env.example  text eol=lf
+.editorconfig text eol=lf
+
+# The Maven wrapper is a shell script even on Windows, where it runs under Git
+# Bash or WSL.
+mvnw          text eol=lf
+
+# --- Native Windows scripts: these genuinely need CRLF ---------------------
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
+*.ps1         text eol=crlf
+
+# --- Never touch -----------------------------------------------------------
+*.jar         binary
+*.zip         binary
+*.gz          binary
+*.png         binary
+*.jpg         binary
+*.ico         binary
+*.pem         binary
+*.p12         binary
+*.jks         binary
+
+# --- Diff hints ------------------------------------------------------------
+*.java        text eol=lf diff=java
+*.md          text eol=lf diff=markdown

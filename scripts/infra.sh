@@ -17,6 +17,12 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
+# Git Bash rewrites arguments that look like absolute POSIX paths into Windows
+# paths before passing them to a program, which breaks any container path given
+# to `docker compose exec`. Disabled here; ignored on every other platform.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="$(cd "${SCRIPT_DIR}/../docker/compose" && pwd)"
 
@@ -44,7 +50,16 @@ ensure_env() {
   fi
 }
 
-compose() { (cd "${COMPOSE_DIR}" && docker compose "$@"); }
+# Names the compose files explicitly rather than relying on COMPOSE_FILE from
+# .env. Compose splits COMPOSE_FILE on COMPOSE_PATH_SEPARATOR, whose default is
+# ':' on macOS and Linux but ';' on Windows - so a colon-separated list turns
+# into one nonexistent filename there. Passing -f removes the question entirely.
+compose() {
+  (cd "${COMPOSE_DIR}" && docker compose \
+      -f docker-compose.yml \
+      -f docker-compose.platform.yml \
+      "$@")
+}
 
 # Prints "name|state|health|exitcode" for every container in the project.
 container_status() {

@@ -63,4 +63,8 @@ echo "  redis     ${REDIS_HOST}:${REDIS_PORT}"
 echo "  kafka     ${KAFKA_BOOTSTRAP_SERVERS}"
 echo
 
-exec "${JAVA_HOME}/bin/java" -jar "${JAR}" "$@"
+# java_bin resolves java or java.exe; the bare path does not exist on Windows.
+JAVA="$(java_bin)"
+[ -n "${JAVA}" ] || { echo "ERROR: no java launcher under ${JAVA_HOME}" >&2; exit 1; }
+
+exec "${JAVA}" -jar "${JAR}" "$@"

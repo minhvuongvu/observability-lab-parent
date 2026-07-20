@@ -23,7 +23,7 @@ echo
 echo "Required to build:"
 
 if resolve_java_home; then
-  echo "  [ok]   JDK        $("${JAVA_HOME}/bin/javac" -version 2>&1 | awk '{print $2}')  (${JAVA_HOME})"
+  echo "  [ok]   JDK        $(java_version_of "${JAVA_HOME}")  (${JAVA_HOME})"
 else
   echo "  [FAIL] JDK        not found, need ${REQUIRED_JAVA_MAJOR} or newer"
   status=1
