@@ -211,12 +211,36 @@ Operational detail — network tiers, init scripts, healthcheck timings, trouble
 
 ## Run a service
 
+The infrastructure must be up first. The wrapper reads the effective ports from
+`docker/compose/.env`, so it works even when the stack has been remapped around ports already in use
+on the host:
+
 ```bash
-java -jar services/order-service/target/order-service-1.0.0-SNAPSHOT.jar
+./scripts/run-service.sh order-service
 ```
 
-The service starts on port 8081 with the `local` profile active. It exposes no endpoints yet — HTTP
-endpoints arrive in step 04, and the wiring to the infrastructure above in steps 08 and 09.
+The Order Service starts on port 8081 with the `local` profile, applies its Flyway migrations and
+connects to PostgreSQL, Redis and Kafka.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/v1/orders` | Place an order. Returns 201 and publishes `order-created`. |
+| `GET /api/v1/orders/{orderNumber}` | Read one order, served from Redis when warm. |
+| `GET /api/v1/orders` | List orders, filterable by `customerId` and `status`, paginated. |
+| `POST /api/v1/orders/{orderNumber}/cancel` | Cancel. 422 if the status does not allow it. |
+| `DELETE /api/v1/orders/{orderNumber}` | Remove a cancelled or rejected order. |
+| `GET /actuator/health` | Health, with `liveness` and `readiness` groups. |
+| `GET /swagger-ui.html` | API documentation (disabled under `prod`). |
+
+```bash
+curl -X POST http://localhost:8081/api/v1/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"customerId":"C-1","currency":"EUR",
+       "items":[{"productSku":"SKU-1","quantity":2,"unitPrice":10.50}]}'
+```
+
+Every response carries `meta.requestId`, `meta.correlationId` and `meta.traceId`. The Inventory
+Service and the end-to-end flow between them arrive in steps 05 and 09.
 
 ## Configuration profiles
 
@@ -263,7 +287,7 @@ documented before the next one starts.
 | 01 | Repository foundation: parent POM, modules, docs skeleton | **Complete** |
 | 02 | Infrastructure: Docker Compose, networks, volumes, healthchecks | **Complete** |
 | 03 | Shared library: DTOs, exceptions, correlation, MDC, base entities | **Complete** |
-| 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | Planned |
+| 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | **Complete** |
 | 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | Planned |
 | 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | Planned |
 | 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | Planned |

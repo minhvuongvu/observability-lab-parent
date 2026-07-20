@@ -9,6 +9,11 @@ server:
     include-message: always
     include-stacktrace: never
 
+management:
+  endpoint:
+    health:
+      show-details: always
+
 logging:
   level:
     root: INFO

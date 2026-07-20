@@ -1,5 +1,5 @@
 # Local profile: developer workstation, infrastructure via Docker Compose.
-# Verbose application logging, human-readable output, no external dependencies assumed.
+# Verbose application logging, full health detail, no external dependencies assumed.
 app:
   environment: local
 
@@ -7,6 +7,21 @@ server:
   error:
     include-message: always
     include-stacktrace: on_param
+
+management:
+  endpoint:
+    health:
+      # Safe here and nowhere else: the whole stack is bound to loopback.
+      show-details: always
+
+spring:
+  jpa:
+    # SQL on the console while developing. Never enabled beyond local: it
+    # bypasses the log pipeline and can print parameter values.
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
 
 logging:
   level:

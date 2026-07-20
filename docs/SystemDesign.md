@@ -64,11 +64,11 @@ Each service follows a clean-architecture layering, DDD-lite. The base package i
 ```
 com.observability.lab.order
 ├── OrderServiceApplication.java
-├── api/                 inbound adapters — REST controllers, request/response models, mappers
-├── application/         use cases, orchestration, transaction boundaries
-├── domain/              entities, value objects, domain services, repository interfaces
-├── infrastructure/      outbound adapters — JPA, Feign, Kafka, Redis, MinIO
-└── config/              Spring configuration classes and @ConfigurationProperties
+├── api/                 inbound adapters — controllers and validated request models
+├── application/         use cases, transaction boundaries, read models, outbound ports
+├── domain/              aggregates, entities, enums with rules, error codes
+├── infrastructure/      outbound adapters — JPA, Feign, Kafka
+└── config/              Spring configuration
 ```
 
 ### 2.1 The dependency rule
@@ -77,16 +77,34 @@ com.observability.lab.order
 api  ──►  application  ──►  domain  ◄──  infrastructure
 ```
 
-- `domain` depends on **nothing** — no Spring, no JPA annotations on pure value objects, no drivers.
-  It is the part that can be unit-tested without any framework.
-- `application` orchestrates the domain and declares outbound *interfaces* it needs.
-- `infrastructure` implements those interfaces against real technology.
+- `domain` holds the rules and depends on no framework beyond JPA mapping annotations. It is
+  unit-tested with plain JUnit and no Spring context.
+- `application` orchestrates the domain, owns the transaction boundary, and **declares the outbound
+  ports it needs** — `OrderRepository` lives here, not in `domain`, because it is the application
+  that decides which capabilities its use cases require. Spring types are permitted here.
+- `infrastructure` implements those ports against real technology and is the only place Spring Data,
+  Feign or Kafka appear.
 - `api` translates HTTP into application calls and back. It never touches `infrastructure` directly.
 
 An import from `domain` into `infrastructure` is always a defect. This is the boundary that keeps the
 business logic testable and the technology swappable.
 
-### 2.2 Shared library packages
+**On JPA annotations in `domain`.** A stricter reading would keep the aggregate free of every
+annotation and map it to a separate persistence model. That buys one thing — the freedom to change
+ORM — at the cost of a duplicate class and a mapper per aggregate. This project takes the DDD-lite
+trade: `jakarta.persistence` is a specification, not a framework, and the annotations are metadata
+that no domain logic reads. The rules that matter — invariants, transitions, totals — stay
+framework-free and testable without a container.
+
+### 2.2 Read models
+
+A use case returns a read model record (`OrderView`), never a managed entity. Returning the entity
+would expose lazy associations outside the transaction, tie the JSON contract to the table layout,
+and put a mutable managed object into a distributed cache. The same record serves the HTTP response
+and the cache; a second identical DTO in the API layer would be ceremony, and the trade accepted is
+that changing the public contract means changing this type deliberately.
+
+### 2.3 Shared library packages
 
 | Package | Contents |
 | --- | --- |
