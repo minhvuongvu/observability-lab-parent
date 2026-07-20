@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# Kong declarative configuration (DB-less mode).
+#
+# In DB-less mode this file IS the gateway's entire state. Nothing can be
+# changed by poking the admin API, so the routing and policy a request passes
+# through is always exactly what is in version control.
+#
+# The gateway currently declares no routes: it accepts connections, reports
+# healthy, and returns 404 for everything. Routing to the services, JWT
+# verification against Keycloak and rate limiting are added in step 06, and
+# they land here rather than in a database migration.
+# ---------------------------------------------------------------------------
+_format_version: "3.0"
+
+# Upstream services proxied by the gateway.
+services: []
+
+# Globally applied plugins. Per-service plugins are declared inline on the
+# service they belong to.
+plugins: []
+
+# JWT credentials are bound to consumers; they arrive with authentication.
+consumers: []

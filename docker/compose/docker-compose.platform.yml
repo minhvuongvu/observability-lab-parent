@@ -1,0 +1,200 @@
+# ===========================================================================
+# Observability Lab - edge and control plane
+#
+# Reverse proxy, API gateway, identity provider and service registry.
+# Combined with docker-compose.yml through COMPOSE_FILE in .env; Keycloak
+# depends on the PostgreSQL service declared there, so this file is never
+# used on its own.
+#
+# Policy configuration - Kong routes and plugins, the Keycloak realm, Consul
+# KV - belongs to later steps. This file's job is that all four components
+# come up healthy, on the right networks, with durable state.
+# ===========================================================================
+
+services:
+
+  # -------------------------------------------------------------------------
+  # Consul - service registry, health checking and KV configuration store.
+  #
+  # Single-node server, which is exactly what a bootstrap_expect of 1 means.
+  # Real clusters run three or five; one is enough to exercise registration,
+  # health and KV, and honest about being a lab.
+  # -------------------------------------------------------------------------
+  consul:
+    image: ${CONSUL_IMAGE}
+    container_name: lab-consul
+    restart: unless-stopped
+    command: ["agent", "-config-dir=/consul/config"]
+    environment:
+      # The image entrypoint resolves the bind address from this interface.
+      # Without it a container with several addresses refuses to start.
+      CONSUL_BIND_INTERFACE: eth0
+    ports:
+      - "${BIND_HOST}:${CONSUL_PORT}:8500"
+    volumes:
+      - consul-data:/consul/data
+      # The single file, not the directory: the image entrypoint chowns
+      # /consul/config on startup, which fails if that directory is itself a
+      # read-only mount. Mounting the file leaves the directory writable and
+      # still keeps the configuration read-only inside the container.
+      - ../../infrastructure/consul/config/server.hcl:/consul/config/server.hcl:ro
+    networks:
+      - lab-app
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # -------------------------------------------------------------------------
+  # Keycloak - OIDC identity provider.
+  #
+  # Runs in production mode (`start`), not `start-dev`: persistent PostgreSQL
+  # storage, real caching, strict-hostname disabled only because the lab is
+  # reached over plain HTTP behind a proxy. Running the same mode as
+  # production is the point of a production simulation.
+  #
+  # First boot performs an automatic build step and is noticeably slower than
+  # subsequent boots - start_period accounts for it.
+  # -------------------------------------------------------------------------
+  keycloak:
+    image: ${KEYCLOAK_IMAGE}
+    container_name: lab-keycloak
+    restart: unless-stopped
+    command: ["start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      # Bootstrap administrator. Rotate it after first login.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # Health and metrics endpoints on the management port (9000).
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      # Terminating TLS at the proxy, so the container itself serves HTTP.
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: xforwarded
+    ports:
+      - "${BIND_HOST}:${KEYCLOAK_PORT}:8080"
+    networks:
+      - lab-app
+      - lab-data
+    healthcheck:
+      # The image ships no curl or wget. This is the bash socket-redirection
+      # form recommended by the Keycloak documentation.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          { printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0;
+          grep -q '200'; } 0<>/dev/tcp/127.0.0.1/9000
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+
+  # -------------------------------------------------------------------------
+  # Kong - API gateway, DB-less.
+  #
+  # Declarative configuration means the gateway's entire state is a file in
+  # version control: reviewable, diffable, and impossible to drift through
+  # someone poking the admin API. It also removes a database and a migration
+  # job from the stack.
+  #
+  # Routes, JWT verification and rate limiting are added in step 06; the
+  # declarative file currently declares an empty configuration.
+  # -------------------------------------------------------------------------
+  kong:
+    image: ${KONG_IMAGE}
+    container_name: lab-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /opt/kong/kong.yml
+      # Logs to stdout/stderr so the container runtime owns log shipping,
+      # rather than files accumulating inside the container.
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
+      KONG_ADMIN_GUI_URL: http://localhost:${KONG_MANAGER_PORT}
+    ports:
+      - "${BIND_HOST}:${KONG_PROXY_PORT}:8000"
+      - "${BIND_HOST}:${KONG_ADMIN_PORT}:8001"
+      - "${BIND_HOST}:${KONG_MANAGER_PORT}:8002"
+    volumes:
+      - ../../infrastructure/kong:/opt/kong:ro
+    networks:
+      - lab-app
+      - lab-edge
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Nginx - single network entry point.
+  #
+  # Sits on lab-edge only. It cannot reach a database or the broker even if
+  # misconfigured, which is the entire reason the edge is its own network.
+  # Upstream routing to Kong and TLS termination arrive in step 06.
+  # -------------------------------------------------------------------------
+  nginx:
+    image: ${NGINX_IMAGE}
+    container_name: lab-nginx
+    restart: unless-stopped
+    depends_on:
+      kong:
+        condition: service_healthy
+    ports:
+      - "${BIND_HOST}:${NGINX_HTTP_PORT}:80"
+    volumes:
+      - ../../infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+    networks:
+      - lab-edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+
+networks:
+  # Public-facing tier. Declared here because Nginx and Kong are its only
+  # members; the data plane file has no reason to know it exists.
+  lab-edge:
+    name: lab-edge
+    driver: bridge
+
+volumes:
+  consul-data:
+    name: lab-consul-data

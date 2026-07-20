@@ -10,18 +10,20 @@ without untangling it from how the container is launched.
 Each component owns one directory, named exactly as the component is named in Compose, so a running
 container can always be traced back to its configuration in one step.
 
+Directories marked `[step nn]` arrive with the step that needs them.
+
 ```
 infrastructure/
-├── nginx/                  reverse proxy: upstreams, TLS termination, access log format
-├── kong/                   declarative gateway config: routes, services, plugins
-├── keycloak/               realm export: clients, roles, users
-├── consul/                 agent config and the KV seed for externalised configuration
-├── postgres/               init SQL for the Order Service schema
-├── oracle/                 init SQL for the Inventory Service schema
-├── kafka/                  broker settings and topic bootstrap
-├── redis/                  redis.conf: eviction policy, persistence, memory limits
-├── minio/                  bucket and policy bootstrap
-└── observability/
+├── nginx/                  nginx.conf + conf.d: JSON access log, /healthz, upstreams [step 06]
+├── kong/                   kong.yml: DB-less declarative config; routes and plugins [step 06]
+├── keycloak/               realm export: clients, roles, users                       [step 07]
+├── consul/                 config/server.hcl; KV seed                                [step 08]
+├── postgres/               init/: per-application databases and owning roles
+├── oracle/                 init/: tablespace quota and schema privileges
+├── kafka/                  init/: topic declarations with retention and partitions
+├── redis/                  redis.conf: eviction policy, persistence, slowlog
+├── minio/                  init/: bucket, versioning, least-privilege user
+└── observability/                                                              [step 10-13]
     ├── otel-collector/     receivers, processors and the fan-out to every backend
     ├── prometheus/         scrape configuration and recording rules
     ├── victoriametrics/    long-term metric storage settings
@@ -49,7 +51,17 @@ infrastructure/
 - **Comment the intent.** These files are read by people learning the stack; explain why a setting is
   what it is, not merely what it sets.
 
+## Init scripts
+
+`postgres/`, `oracle/`, `kafka/` and `minio/` each carry an `init/` directory that is mounted into
+the corresponding container and executed **once**, against empty state. They are idempotent where the
+tooling allows it, and they read every credential from the environment.
+
+Re-running them means deleting the volume: `../scripts/infra.sh destroy`.
+
 ## Status
 
-Populated from **step 02** onwards. Step 01 establishes the repository skeleton only — see the
-roadmap in the [root README](../README.md).
+As of **step 02**, the six configuration and init directories above are populated and the stack comes
+up healthy. Gateway routing, the Keycloak realm, Consul KV and the observability configuration arrive
+with the steps marked in the layout — see the roadmap in the [root README](../README.md), and
+[docs/Infrastructure.md](../docs/Infrastructure.md) for how the stack is operated.

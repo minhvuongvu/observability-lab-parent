@@ -1,0 +1,311 @@
+# ===========================================================================
+# Observability Lab - core data plane
+#
+# Stateful backing services: databases, cache, broker and object storage.
+# The edge and control plane live in docker-compose.platform.yml; both files
+# are combined through COMPOSE_FILE in .env.
+#
+#   ../../scripts/infra.sh up
+#
+# Every published port binds to ${BIND_HOST} (127.0.0.1 by default) so nothing
+# in this stack is reachable from the local network without an explicit change.
+# ===========================================================================
+name: observability-lab
+
+networks:
+  # Stateful backends. Only components that genuinely need a database, the
+  # broker or the object store are attached here.
+  lab-data:
+    name: lab-data
+    driver: bridge
+  # Application tier. Services, discovery, identity and the gateway meet here.
+  lab-app:
+    name: lab-app
+    driver: bridge
+
+volumes:
+  postgres-data:
+    name: lab-postgres-data
+  oracle-data:
+    name: lab-oracle-data
+  kafka-data:
+    name: lab-kafka-data
+  redis-data:
+    name: lab-redis-data
+  minio-data:
+    name: lab-minio-data
+
+services:
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL - system of record for the Order Service, and Keycloak's store.
+  #
+  # One engine hosts two independent databases with separate owning roles.
+  # A laptop cannot afford an engine per consumer; role separation preserves
+  # the property that actually matters, which is that neither can read the
+  # other's data.
+  # -------------------------------------------------------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: lab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_SUPERUSER_DB}
+      # Consumed by the init script to provision per-application databases.
+      ORDER_DB_NAME: ${ORDER_DB_NAME}
+      ORDER_DB_USER: ${ORDER_DB_USER}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD}
+      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME}
+      KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    ports:
+      - "${BIND_HOST}:${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../../infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - lab-data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # -------------------------------------------------------------------------
+  # Oracle - system of record for the Inventory Service.
+  #
+  # Oracle Database Free 23ai is the current name of what used to be Oracle XE;
+  # unlike the 21c XE images it publishes a native arm64 build, so it runs
+  # without emulation on Apple Silicon. Override ORACLE_IMAGE to pin 21c XE.
+  #
+  # This is by far the slowest container to become healthy. start_period is
+  # generous on purpose - do not shorten it because "it looks stuck".
+  # -------------------------------------------------------------------------
+  oracle:
+    image: ${ORACLE_IMAGE}
+    container_name: lab-oracle
+    restart: unless-stopped
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD}
+      APP_USER: ${INVENTORY_DB_USER}
+      APP_USER_PASSWORD: ${INVENTORY_DB_PASSWORD}
+      # Read by the init script; the app user lives in the pluggable database.
+      ORACLE_PDB: ${ORACLE_PDB}
+    ports:
+      - "${BIND_HOST}:${ORACLE_PORT}:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ../../infrastructure/oracle/init:/container-entrypoint-initdb.d:ro
+    networks:
+      - lab-data
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: 2560M
+
+  # -------------------------------------------------------------------------
+  # Kafka - event backbone, KRaft mode (no ZooKeeper).
+  #
+  # Two client listeners: INTERNAL for containers on lab-data, EXTERNAL for a
+  # service run straight from the IDE on the host. Advertised addresses differ
+  # per listener, which is the single most common source of "connects then
+  # immediately fails" Kafka problems.
+  #
+  # Topic auto-creation is off. Topics are infrastructure and are declared in
+  # the init container below, not conjured by whoever produces first.
+  # -------------------------------------------------------------------------
+  kafka:
+    image: ${KAFKA_IMAGE}
+    container_name: lab-kafka
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Single-node cluster: internal topics cannot be replicated further.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Rebalance immediately instead of waiting for more consumers to arrive.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    ports:
+      - "${BIND_HOST}:${KAFKA_EXTERNAL_PORT}:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - lab-data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+
+  # -------------------------------------------------------------------------
+  # Topic bootstrap. Runs once, exits, and is not restarted.
+  # Creating a topic is idempotent here, so a re-run after `down` is harmless.
+  # -------------------------------------------------------------------------
+  kafka-init:
+    image: ${KAFKA_IMAGE}
+    container_name: lab-kafka-init
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS}
+      TOPIC_REPLICATION: ${KAFKA_TOPIC_REPLICATION}
+    entrypoint: ["/bin/bash", "/opt/lab-init/create-topics.sh"]
+    volumes:
+      - ../../infrastructure/kafka/init:/opt/lab-init:ro
+    networks:
+      - lab-data
+
+  # -------------------------------------------------------------------------
+  # Kafka UI - broker, topic, consumer-group and lag inspection.
+  # -------------------------------------------------------------------------
+  kafka-ui:
+    image: ${KAFKA_UI_IMAGE}
+    container_name: lab-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: observability-lab
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+      SERVER_PORT: 8080
+    ports:
+      - "${BIND_HOST}:${KAFKA_UI_PORT}:8080"
+    networks:
+      - lab-data
+      - lab-app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Redis - cache, distributed locks and rate-limit counters.
+  #
+  # The password arrives as a command argument rather than in redis.conf,
+  # because a config file in the repository must never contain a credential.
+  # CLI arguments override the file, so redis.conf keeps the policy and the
+  # environment keeps the secret.
+  # -------------------------------------------------------------------------
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: lab-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "${BIND_HOST}:${REDIS_PORT}:6379"
+    volumes:
+      - redis-data:/data
+      - ../../infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - lab-data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # -------------------------------------------------------------------------
+  # MinIO - S3-compatible object storage for generated invoices.
+  # -------------------------------------------------------------------------
+  minio:
+    image: ${MINIO_IMAGE}
+    container_name: lab-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${BIND_HOST}:${MINIO_API_PORT}:9000"
+      - "${BIND_HOST}:${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - lab-data
+      - lab-app
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Bucket bootstrap. Creates the invoice bucket and a least-privilege
+  # application user, so services never authenticate as the MinIO root account.
+  # -------------------------------------------------------------------------
+  minio-init:
+    image: ${MINIO_MC_IMAGE}
+    container_name: lab-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_APP_USER: ${MINIO_APP_USER}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD}
+      MINIO_INVOICE_BUCKET: ${MINIO_INVOICE_BUCKET}
+    entrypoint: ["/bin/sh", "/opt/lab-init/create-buckets.sh"]
+    volumes:
+      - ../../infrastructure/minio/init:/opt/lab-init:ro
+    networks:
+      - lab-data

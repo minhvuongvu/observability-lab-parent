@@ -162,7 +162,9 @@ launched*. They are kept apart so either can be read without the other.
 | --- | --- | --- |
 | JDK | 21 or newer | Building and running the services |
 | Maven | 3.9+ (or use `./mvnw`) | Building |
-| Docker + Compose | recent | Running the infrastructure, from step 02 onwards |
+| Docker + Compose | recent, **8 GB** allocated | Running the infrastructure |
+
+Oracle accounts for most of that memory figure. 6 GB works; below that it will not start.
 
 The build compiles to Java 21 bytecode and enforces the toolchain floor, so an older JDK fails fast
 with a message rather than a confusing compilation error.
@@ -187,15 +189,34 @@ or drive Maven directly if your `JAVA_HOME` already points at JDK 21:
 
 This compiles all modules, runs the tests and produces an executable jar per service.
 
+## Run the infrastructure
+
+Ten containers — gateway, proxy, identity, registry, two databases, broker, cache and object storage
+— come up as one stack:
+
+```bash
+./scripts/infra.sh up        # start and wait until every container is healthy
+./scripts/infra.sh health    # one line per container
+./scripts/infra.sh urls      # where every UI lives
+./scripts/infra.sh down      # stop, keep the data
+./scripts/infra.sh destroy   # stop and delete every volume (asks first)
+```
+
+First run pulls several GB and initialises Oracle from scratch, so expect a few minutes. Everything
+binds to `127.0.0.1`, and configuration lives in `docker/compose/.env`, created automatically from
+the tracked `.env.example`.
+
+Operational detail — network tiers, init scripts, healthcheck timings, troubleshooting — is in
+[docs/Infrastructure.md](docs/Infrastructure.md).
+
 ## Run a service
 
 ```bash
 java -jar services/order-service/target/order-service-1.0.0-SNAPSHOT.jar
 ```
 
-The service starts on port 8081 with the `local` profile active. At step 01 it exposes no endpoints
-yet — the point of this step is a context that starts cleanly and a build that is green. HTTP
-endpoints arrive in step 04.
+The service starts on port 8081 with the `local` profile active. It exposes no endpoints yet — HTTP
+endpoints arrive in step 04, and the wiring to the infrastructure above in steps 08 and 09.
 
 ## Configuration profiles
 
@@ -224,6 +245,7 @@ by service and environment.
 | --- | --- |
 | [docs/Architecture.md](docs/Architecture.md) | Design principles, system context, runtime topology, communication patterns, observability architecture, decision log |
 | [docs/SystemDesign.md](docs/SystemDesign.md) | Module and package design, configuration strategy, port allocation, API and error conventions, resilience and testing strategy |
+| [docs/Infrastructure.md](docs/Infrastructure.md) | What runs in Docker, network topology, init scripts, healthchecks, data lifecycle, troubleshooting |
 
 Deployment, Observability, Logging, Metrics, Tracing, Profiling, Kafka, Redis, Gateway, Keycloak,
 Consul, MinIO, Runbook, Troubleshooting, Performance and Security guides are produced by the steps
@@ -239,7 +261,7 @@ documented before the next one starts.
 | Step | Scope | Status |
 | --- | --- | --- |
 | 01 | Repository foundation: parent POM, modules, docs skeleton | **Complete** |
-| 02 | Infrastructure: Docker Compose, networks, volumes, healthchecks | Planned |
+| 02 | Infrastructure: Docker Compose, networks, volumes, healthchecks | **Complete** |
 | 03 | Shared library: DTOs, exceptions, correlation, MDC, base entities | Planned |
 | 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | Planned |
 | 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | Planned |
