@@ -1,3 +1,4 @@
 com.observability.lab.shared.autoconfigure.CorrelationAutoConfiguration
 com.observability.lab.shared.autoconfigure.ExceptionHandlingAutoConfiguration
 com.observability.lab.shared.autoconfigure.PersistenceAutoConfiguration
+com.observability.lab.shared.autoconfigure.ResourceServerAutoConfiguration

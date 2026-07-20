@@ -24,6 +24,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
@@ -37,8 +38,13 @@ import org.springframework.test.web.servlet.MockMvc;
  * auto-configurations belonging to the web slice, and the shared library's are not among them.
  * Without the import this would assert against Spring's default whitelabel error body and prove
  * nothing about the error contract the service publishes.
+ *
+ * <p>Security filters are switched off here ({@code addFilters = false}). This slice covers the
+ * controller's binding, validation and error mapping, not authentication; the resource-server rules
+ * added in step 07 are proved separately in {@link StockSecurityTest}.
  */
 @WebMvcTest(StockController.class)
+@AutoConfigureMockMvc(addFilters = false)
 @Import({GlobalExceptionHandler.class, ConstraintViolationAdvice.class})
 @DisplayName("StockController")
 class StockControllerTest {

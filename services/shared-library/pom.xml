@@ -61,6 +61,18 @@
             <optional>true</optional>
         </dependency>
 
+        <!--
+            Resource-server support for ResourceServerAutoConfiguration. Optional,
+            like the rest: a service opts in by declaring this same starter, and
+            the auto-configuration then activates on its classpath. A service that
+            genuinely serves no protected API simply does not add it.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Generates IDE metadata for the @ConfigurationProperties in this module. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

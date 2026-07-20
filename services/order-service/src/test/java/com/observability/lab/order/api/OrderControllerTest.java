@@ -27,6 +27,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Page;
@@ -43,8 +44,13 @@ import org.springframework.test.web.servlet.MockMvc;
  * auto-configurations belonging to the web slice, and the shared library's are not among them — so
  * without this import the test would exercise Spring's default whitelabel error body and prove
  * nothing about the error contract this service publishes.
+ *
+ * <p>Security filters are switched off here ({@code addFilters = false}). This slice covers the
+ * controller's binding, validation and error mapping, not authentication; the resource-server rules
+ * added in step 07 are proved separately in {@link OrderSecurityTest}.
  */
 @WebMvcTest(OrderController.class)
+@AutoConfigureMockMvc(addFilters = false)
 @Import({GlobalExceptionHandler.class, ConstraintViolationAdvice.class})
 @DisplayName("OrderController")
 class OrderControllerTest {

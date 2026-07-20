@@ -12,6 +12,7 @@ to run from any working directory, and resolves its own toolchain rather than tr
 | `infra.sh` | Drives the Docker infrastructure stack: start, stop, health, logs, destroy. Unrecognised commands pass through to `docker compose`. |
 | `run-service.sh` | Runs a service against the running stack, reading the effective ports from `docker/compose/.env` so a remapped stack still connects correctly. |
 | `gateway.sh` | Validates, reloads and inspects the edge: Kong's routes, plugins and upstream target health. |
+| `token.sh` | Fetches a Keycloak access token via the password grant, for calling the protected APIs by hand. Prints only the token. |
 | `toolchain.sh` | Sourced helper that resolves a JDK 21+ into `JAVA_HOME`. Not executed directly. |
 
 ## Usage
@@ -29,6 +30,9 @@ to run from any working directory, and resolves its own toolchain rather than tr
 
 ./scripts/run-service.sh order-service
 ./scripts/run-service.sh order-service --spring.profiles.active=dev
+
+TOKEN=$(./scripts/token.sh alice)   # USER token; ./scripts/token.sh manager for ADMIN
+curl -H "Authorization: Bearer $TOKEN" http://localhost/api/v1/orders
 ```
 
 ## Conventions

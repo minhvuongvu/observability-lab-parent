@@ -259,33 +259,45 @@ client ──► Nginx :80 ──► Kong :8000 ──► order-service :8081
                                     └─► inventory-service :8082
 ```
 
-Nginx owns request identity and security headers; Kong owns routing, rate limiting and upstream
-health checking. The service ports stay bound to `127.0.0.1` and are for operators — calling them
-directly skips every gateway policy.
+Nginx owns request identity and security headers; Kong owns routing, rate limiting, upstream health
+checking and — since step 07 — JWT verification. The service ports stay bound to `127.0.0.1` and are
+for operators — calling them directly skips the gateway, but not authentication: the services
+validate the token themselves too (see [docs/Keycloak.md](docs/Keycloak.md)).
 
 ```bash
 ./scripts/gateway.sh status      # routes, plugins, upstream health
 ```
 
+Since step 07 every `/api/**` call needs a Keycloak bearer token. `/actuator/health` and
+`/swagger-ui.html` stay open, and `DELETE` requires the `ADMIN` role.
+
 ### Seeing both services work together
 
-With the stack and both services running, everything goes through the edge:
+With the stack and both services running, everything goes through the edge, and every call carries a
+token (`./scripts/token.sh` mints one — `alice` is a `USER`, `manager` is an `ADMIN`):
 
 ```bash
+TOKEN=$(./scripts/token.sh alice)
+
 # Track a product
 curl -X POST http://localhost/api/v1/stock \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"productSku":"SKU-1","initialQuantity":100}'
 
 # Place an order for it
 curl -X POST http://localhost/api/v1/orders \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"customerId":"C-1","currency":"EUR",
        "items":[{"productSku":"SKU-1","quantity":2,"unitPrice":10.50}]}'
 
 # The Inventory Service consumed order-created and reserved the units
-curl http://localhost/api/v1/stock/SKU-1
+curl http://localhost/api/v1/stock/SKU-1 -H "Authorization: Bearer $TOKEN"
 ```
+
+Without the header the edge answers `401`; `DELETE` with `alice`'s token answers `403`, with
+`manager`'s it succeeds. The full auth model is in [docs/Keycloak.md](docs/Keycloak.md).
 
 `/actuator` is deliberately not routed through the gateway — health detail and metrics describe
 internal topology, so they stay on the service port.
@@ -325,10 +337,11 @@ by service and environment.
 | [docs/Architecture.md](docs/Architecture.md) | Design principles, system context, runtime topology, communication patterns, observability architecture, decision log |
 | [docs/SystemDesign.md](docs/SystemDesign.md) | Module and package design, configuration strategy, port allocation, API and error conventions, resilience and testing strategy |
 | [docs/Infrastructure.md](docs/Infrastructure.md) | What runs in Docker, network topology, init scripts, healthchecks, data lifecycle, troubleshooting |
+| [docs/Keycloak.md](docs/Keycloak.md) | Authentication: the realm, clients, roles and users, the JWT flow, and how the gateway and services verify a token |
 
-Deployment, Observability, Logging, Metrics, Tracing, Profiling, Kafka, Redis, Gateway, Keycloak,
-Consul, MinIO, Runbook, Troubleshooting, Performance and Security guides are produced by the steps
-that introduce each capability, and consolidated in step 16.
+Deployment, Observability, Logging, Metrics, Tracing, Profiling, Kafka, Redis, Gateway, Consul,
+MinIO, Runbook, Troubleshooting, Performance and Security guides are produced by the steps that
+introduce each capability, and consolidated in step 16.
 
 ---
 
@@ -345,7 +358,7 @@ documented before the next one starts.
 | 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | **Complete** |
 | 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | **Complete** |
 | 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | **Complete** |
-| 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | Planned |
+| 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | **Complete** |
 | 08 | Service discovery: Consul registration, health, KV configuration | Planned |
 | 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | Planned |
 | 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | Planned |

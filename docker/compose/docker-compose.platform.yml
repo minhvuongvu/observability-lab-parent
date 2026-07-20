@@ -66,7 +66,12 @@ services:
     image: ${KEYCLOAK_IMAGE}
     container_name: lab-keycloak
     restart: unless-stopped
-    command: ["start"]
+    # --import-realm reads every realm file under /opt/keycloak/data/import on
+    # boot. The import is idempotent: once the realm exists it is skipped, so
+    # this is safe to leave on. Dropping the postgres-data volume is what makes
+    # it re-import. The realm pins its own RSA signing key (step 07), so the
+    # public key Kong verifies with is deterministic across rebuilds.
+    command: ["start", "--import-realm"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,6 +92,11 @@ services:
       KC_PROXY_HEADERS: xforwarded
     ports:
       - "${BIND_HOST}:${KEYCLOAK_PORT}:8080"
+    volumes:
+      # Read-only realm import. Keycloak only reads this at boot; it never writes
+      # back, so the file in version control stays the single source of truth for
+      # the realm, its clients, roles, users and signing key.
+      - ../../infrastructure/keycloak/realm:/opt/keycloak/data/import:ro
     networks:
       - lab-app
       - lab-data

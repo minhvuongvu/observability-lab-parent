@@ -136,10 +136,11 @@ services:
         config:
           remove:
             headers:
-              # The services trust X-User-Id as the authenticated subject, so a
-              # client must never be able to set it. Removing it at the gateway
-              # is what makes that trust safe. The JWT plugin will set it from a
-              # verified token.
+              # A client must never be able to assert its own identity. The
+              # services derive the authenticated subject from the verified token
+              # themselves, so the gateway's only job here is to strip any inbound
+              # X-User-Id - otherwise a caller could forge one and it would be
+              # logged as fact.
               - X-User-Id
 
   - name: inventory-service
@@ -183,24 +184,26 @@ plugins:
       size_unit: megabytes
 
   # ---------------------------------------------------------------------------
-  # JWT verification.
+  # JWT verification (step 07).
   #
-  # Declared and NOT enforcing. `enabled: false` is a deliberate, reviewable
-  # state rather than a placeholder: an enabled jwt plugin with no consumer
-  # holding a matching public key rejects every request with 401, and there is
-  # no realm issuing tokens yet.
+  # Enforcing. Every request to a routed service must carry a bearer token whose
+  # signature verifies against the Keycloak realm's public key - held by the
+  # consumer below - and whose `iss` claim names that key. A request with no
+  # token, an unknown issuer or a bad signature is refused here with 401 before
+  # it ever reaches a service.
   #
-  # Step 07 creates the Keycloak realm, adds a consumer whose jwt_secret carries
-  # that realm's RSA public key under a `key` equal to the token's `iss` claim,
-  # and flips this to true. Nothing else in this file changes.
-  #
-  # The configuration below is real and is what will take effect:
-  #   - the issuer claim identifies which key to verify with
-  #   - exp is verified, so an expired token is refused rather than merely old
-  #   - the token is not passed upstream; services receive identity as headers
+  #   - key_claim_name: iss selects the verifying key by the token's issuer, so
+  #     the realm's public key is found by the exact issuer string it was minted
+  #     with.
+  #   - exp is verified, so an expired token is refused rather than merely old.
+  #   - the token IS forwarded upstream. The services are OAuth2 resource servers
+  #     in their own right (defense in depth): they re-validate signature and
+  #     issuer and enforce per-endpoint role authorization, which an edge keyed on
+  #     one realm consumer cannot. Verifying twice is deliberate - the gateway and
+  #     the service fail closed independently.
   # ---------------------------------------------------------------------------
   - name: jwt
-    enabled: false
+    enabled: true
     config:
       key_claim_name: iss
       claims_to_verify:
@@ -210,7 +213,28 @@ plugins:
 # ---------------------------------------------------------------------------
 # Consumers
 #
-# Populated in step 07 with the Keycloak realm's verification key. Empty here
-# rather than carrying an invented key that would have to be replaced.
+# One consumer stands for the Keycloak realm, not a person. The community JWT
+# plugin verifies with a static key rather than fetching JWKS, so the realm's
+# public key lives here and is looked up by the `iss` string carried in each
+# token (key_claim_name above). It is the exact public half of the RSA key the
+# realm import pins, so it keeps verifying across stack rebuilds.
+#
+# The `key` is the token issuer. If KEYCLOAK_PORT or KEYCLOAK_REALM in .env
+# change, the issuer changes and this value must change with it, or every token
+# is rejected as coming from an unknown issuer.
 # ---------------------------------------------------------------------------
-consumers: []
+consumers:
+  - username: keycloak-observability
+    jwt_secrets:
+      - key: "http://localhost:8080/realms/observability"
+        algorithm: RS256
+        rsa_public_key: |
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuYE7UFCC0NGE2UoKkFYz
+          +M9WhbiJg4YKOfbqzXZKHXrrFKxH5s9n+ULqkkKbvUuPY6Zhz+u069yWDVWeb5An
+          yYY7+QEifO74hLTJcnf/Ar4mc+vn18aMusrCeB75jsocGEep1iHN1Dc5mLO3KuVy
+          ZJakcb+g+6SCwa/o/wX/i1tmm2jtRweRGNAVwttrlNONEJJmOUbB47YeBzR9iJTK
+          6MnQedydW2X0KrNZuHamLhCh/AZPvSxaRHzZiv+tr2UPVqBlrNyJX5qfWMAenLKp
+          5Sp+FT4gDBYC/HHhH+JMW/CNg3PhqQU+4I7JnZ69/L4eU84n9EMnpgKkzGqvZGFT
+          vwIDAQAB
+          -----END PUBLIC KEY-----

@@ -1,0 +1,150 @@
+{
+  "realm": "observability",
+  "displayName": "Observability Lab",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+
+  "defaultSignatureAlgorithm": "RS256",
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "revokeRefreshToken": false,
+
+  "roles": {
+    "realm": [
+      {
+        "name": "USER",
+        "description": "Standard authenticated user. May read and place orders and read stock."
+      },
+      {
+        "name": "ADMIN",
+        "description": "Elevated user. May additionally perform destructive operations (DELETE)."
+      }
+    ]
+  },
+
+  "clients": [
+    {
+      "clientId": "gateway",
+      "name": "API Gateway (Kong / BFF)",
+      "description": "Confidential client representing the edge. Demonstrates client-credentials and the confidential authorization-code flow.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "gateway-local-dev-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "redirectUris": ["http://localhost/*", "http://localhost:8000/*"],
+      "webOrigins": ["+"],
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "swagger-ui",
+      "name": "Swagger UI",
+      "description": "Public client the per-service Swagger UIs authenticate through. Direct access grants are enabled so the documented curl token flow works without a secret.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:8081/*",
+        "http://localhost:8082/*",
+        "http://localhost/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "frontend",
+      "name": "Frontend (placeholder SPA)",
+      "description": "Public single-page-application placeholder. Standard authorization-code flow with PKCE; no direct access grants.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "fullScopeAllowed": true
+    }
+  ],
+
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "User",
+      "email": "alice@lab.local",
+      "credentials": [
+        { "type": "password", "value": "alice", "temporary": false }
+      ],
+      "realmRoles": ["USER"]
+    },
+    {
+      "username": "manager",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Mona",
+      "lastName": "Manager",
+      "email": "manager@lab.local",
+      "credentials": [
+        { "type": "password", "value": "manager", "temporary": false }
+      ],
+      "realmRoles": ["ADMIN", "USER"]
+    }
+  ],
+
+  "components": {
+    "org.keycloak.keys.KeyProvider": [
+      {
+        "name": "rsa-lab-fixed",
+        "providerId": "rsa",
+        "subComponents": {},
+        "config": {
+          "priority": ["101"],
+          "enabled": ["true"],
+          "active": ["true"],
+          "algorithm": ["RS256"],
+          "privateKey": ["MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC5gTtQUILQ0YTZSgqQVjP4z1aFuImDhgo59urNdkodeusUrEfmz2f5QuqSQpu9S49jpmHP67Tr3JYNVZ5vkCfJhjv5ASJ87viEtMlyd/8CviZz6+fXxoy6ysJ4HvmOyhwYR6nWIc3UNzmYs7cq5XJklqRxv6D7pILBr+j/Bf+LW2abaO1HB5EY0BXC22uU040QkmY5RsHjth4HNH2IlMroydB53J1bZfQqs1m4dqYuEKH8Bk+9LFpEfNmK/62vZQ9WoGWs3Ilfmp9YwB6csqnlKn4VPiAMFgL8ceEf4kxb8I2Dc+GpBT7gjsmdnr38vh5Tzif0QyemAqTMaq9kYVO/AgMBAAECggEBAJ3T7PIdPd+Kk3wH+crp/NfxGA03f5AuZ97/TLC4tsA0R3RUS+x9hFnX7Bm6oCTC9+FxuwCa61hNWkFIGj+TJ7bXBYmKxJwE+d52rno8y/O6cp7oFF5KaIu4XRK0T+GD5blmp4IvSp8GyXM5XFsb0mLwpEK/JqlTQ4ilMRhhMxWNns99ohbsfVqwrW8WbNideyR5vmiVBwZag195f9uvlPeUgmk94XWJtOWnZy2S/qz+wY1KrIWQRpTn0pHyImC3iMhd939WUi04fnOJihui8WLuWxzU8RidNa62NCqwZtOlzf3SKRlrsr/IeDxGf07qNUNniW/Vwmq9vuAGS3pm24kCgYEA78ySsa0y9fAcqCUTcVZkFZV2hl9GwnBnaaXKlUKhYrAdpDFuZKn2tv/21iqMWOZ/z2sWqvIZ4Kw13EPggT9wAVIRgamej/7EgArJvcwEGJp+WLu+1a0vVbDeLZ/bqkyK/bbLgCfTGhsnwNf0gjGKbR0YFIiNOGJtXVFPjem/t1sCgYEAxgmdo6FLCNPt117tr2vPAX8sL/wRtmOcvzKJy9IgfVS2nQZ3tnsDsWZ+b+1Yy/y3299NUrqyQurk093KyA+WsJZtCS+k8DY2neSB6kifMQm8Yn1UyR8kUR0dWs2u6Ch9P9KbcqeY9Tj5tXYspMBBEMfzI65XeERuhtql1mC2Zm0CgYBM2ne5UhUfFVFZ4mgUzudMs5ZFAowfDP9XsLb4l145zs/xK5aB1Kcph2eIxCIu69DSnTOqneUFSKwKaAav5bDz+2V49O/InpJDpzF5DsXRTNJpheJngRXGlOTgIne4YMe7ALa/4AOcPk/DUnMettnylnx9ODZqd8EtQz4H8X5sOQKBgBIpK5Wn4vOqS7NmdzGRF2ixuuGjohQxylwWTGCuomAb9qsrvqqzWUFZftrQz0XVpR66uaKOkG5mkBmFy2TRWSZUhSdEgUGuFxAftnI/uqmKlQYLLE1NV81AeEKtfg64N9Q0giDfkb1bPjsP3UQ2hUD+tSNeh5L145TmVDL2p4N5AoGBAIkuJOcmcKtaEgMpYGF9OXPTHrsqigN5yigWicPXA8Xm+V5ZF+DP6xE6wbt7nwyT9ancHvgcwsL7+2clOSWdOvXP+iyjHbU/+btENPZCMbAWBKMgOVURJWb4gAeZ8W8AWXH/zniyvKZk6lQBAZearXvMlmGgIbipeHldS7z/fU0s"],
+          "certificate": ["MIICwTCCAakCFDH3LOVnYoAlftCBcuquDi+Y9lnwMA0GCSqGSIb3DQEBCwUAMBwxGjAYBgNVBAMMEW9ic2VydmFiaWxpdHktbGFiMCAXDTI2MDcyMDEzMjYwMVoYDzIxMjYwNjI2MTMyNjAxWjAcMRowGAYDVQQDDBFvYnNlcnZhYmlsaXR5LWxhYjCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALmBO1BQgtDRhNlKCpBWM/jPVoW4iYOGCjn26s12Sh166xSsR+bPZ/lC6pJCm71Lj2OmYc/rtOvclg1Vnm+QJ8mGO/kBInzu+IS0yXJ3/wK+JnPr59fGjLrKwnge+Y7KHBhHqdYhzdQ3OZiztyrlcmSWpHG/oPukgsGv6P8F/4tbZpto7UcHkRjQFcLba5TTjRCSZjlGweO2Hgc0fYiUyujJ0HncnVtl9CqzWbh2pi4QofwGT70sWkR82Yr/ra9lD1agZazciV+an1jAHpyyqeUqfhU+IAwWAvxx4R/iTFvwjYNz4akFPuCOyZ2evfy+HlPOJ/RDJ6YCpMxqr2RhU78CAwEAATANBgkqhkiG9w0BAQsFAAOCAQEAgePtryDebRfDX5Uy7fr4IJtUIEzPyQmWIzlMncFSJkXQk0IZIpIARUl9COnqtaXkQsgKgIJuprl7TDAqgmwu91btBiMggvMUS1o1MhJJYpRVzRKkmBDZwGxdJPwu6AkhuT0GPi/NeWJ7OJ3KhenxVuTAVA5scuFLlisDE4k+vYbbggA0AzqcADfptCykqJFXXc5aO8zgZ4EdOvw9zROPEncK1lOtBvjQrWRO2tAb+cFxNCswd5RDr1S+cRW0CyESvWIqK4hk8tJP17jxt0tMwbbhpmxLp9OzTUT72IA/vtWi7aRYg7/ClxFGMZUyyCjh25gLJacZlcHTJDte5SQquA=="]
+        }
+      },
+      {
+        "name": "hmac-generated",
+        "providerId": "hmac-generated",
+        "config": {
+          "priority": ["100"],
+          "enabled": ["true"],
+          "active": ["true"],
+          "algorithm": ["HS512"]
+        }
+      },
+      {
+        "name": "aes-generated",
+        "providerId": "aes-generated",
+        "config": {
+          "priority": ["100"],
+          "enabled": ["true"],
+          "active": ["true"]
+        }
+      }
+    ]
+  }
+}

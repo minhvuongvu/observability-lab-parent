@@ -21,6 +21,16 @@ spring:
   jackson:
     default-property-inclusion: non_null
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Verification keys are fetched lazily from the realm's JWKS endpoint,
+          # so the service starts even when Keycloak is not up yet. What is
+          # actually asserted on every token - issuer and expiry - is validated
+          # by the decoder configured from app.security.issuer-uri below.
+          jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://localhost:8080/realms/observability/protocol/openid-connect/certs}
+
   datasource:
     url: jdbc:oracle:thin:@//${ORACLE_DB_HOST:localhost}:${ORACLE_DB_PORT:1521}/${ORACLE_PDB:FREEPDB1}
     username: ${INVENTORY_DB_USER:inventory_user}
@@ -106,6 +116,12 @@ app:
   name: ${spring.application.name}
   version: @project.version@
   environment: local
+
+  security:
+    # Issuer every token must carry; verified on every request. Kong enforces
+    # the same issuer at the edge (infrastructure/kong/kong.yml), so a token is
+    # checked against it twice - once at the gateway, once here.
+    issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8080/realms/observability}
 
   kafka:
     topics:
