@@ -9,8 +9,13 @@ server:
     include-message: always
     include-stacktrace: never
 
+management:
+  endpoint:
+    health:
+      show-details: always
+
 logging:
   level:
     root: INFO
     com.observability.lab: DEBUG
-    org.springframework.web: INFO
+    org.springframework.kafka: INFO

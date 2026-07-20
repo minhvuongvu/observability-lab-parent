@@ -144,7 +144,7 @@ and only the Bean Validation advice is conditional.
 | Log field | snake_case | `trace_id`, `correlation_id`, `user_id` |
 | Config key | kebab-case under a service-owned root | `app.kafka.retry.max-attempts` |
 | Error code | `<CTX>-<HTTP class><serial>` | `ORD-4001`, `INV-5003` |
-| Database table | snake_case, plural | `orders`, `order_lines`, `stock_levels` |
+| Database table | snake_case, plural | `orders`, `order_items`, `stock_levels` |
 
 ## 4. Configuration strategy
 
@@ -312,7 +312,7 @@ Every one of these emits metrics. A circuit breaker that opens silently is worse
 | Aspect | Order Service | Inventory Service |
 | --- | --- | --- |
 | Engine | PostgreSQL | Oracle XE |
-| Owns | `orders`, `order_lines` | `stock_levels`, `stock_movements` |
+| Owns | `orders`, `order_items` | `stock_levels`, `stock_movements`, `processed_events` |
 | Access | Spring Data JPA | Spring Data JPA |
 | Migration | Versioned scripts, applied at startup | Versioned scripts, applied at startup |
 | Auditing | `created_at`, `created_by`, `updated_at`, `updated_by` via `AuditableEntity` | Same |

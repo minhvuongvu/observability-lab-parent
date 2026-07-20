@@ -232,15 +232,50 @@ connects to PostgreSQL, Redis and Kafka.
 | `GET /actuator/health` | Health, with `liveness` and `readiness` groups. |
 | `GET /swagger-ui.html` | API documentation (disabled under `prod`). |
 
+### Inventory Service
+
 ```bash
+./scripts/run-service.sh inventory-service
+```
+
+Starts on port 8082 against Oracle, and consumes `order-created` from Kafka.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/v1/stock` | Start tracking a product. |
+| `GET /api/v1/stock/{productSku}` | Read one stock level, served from Redis when warm. |
+| `GET /api/v1/stock` | List tracked products, paginated. |
+| `POST /api/v1/stock/{productSku}/receive` | Units arrived. |
+| `POST /api/v1/stock/{productSku}/release` | Undo a reservation. |
+| `POST /api/v1/stock/{productSku}/adjust` | Operator correction. |
+| `DELETE /api/v1/stock/{productSku}` | Stop tracking. Refused while units are reserved. |
+
+### Seeing both services work together
+
+With the stack and both services running:
+
+```bash
+# Track a product
+curl -X POST http://localhost:8082/api/v1/stock \
+  -H 'Content-Type: application/json' \
+  -d '{"productSku":"SKU-1","initialQuantity":100}'
+
+# Place an order for it
 curl -X POST http://localhost:8081/api/v1/orders \
   -H 'Content-Type: application/json' \
   -d '{"customerId":"C-1","currency":"EUR",
        "items":[{"productSku":"SKU-1","quantity":2,"unitPrice":10.50}]}'
+
+# The Inventory Service consumed order-created and reserved the units
+curl http://localhost:8082/api/v1/stock/SKU-1
 ```
 
-Every response carries `meta.requestId`, `meta.correlationId` and `meta.traceId`. The Inventory
-Service and the end-to-end flow between them arrive in steps 05 and 09.
+Every response carries `meta.requestId`, `meta.correlationId` and `meta.traceId`.
+
+**The loop is deliberately not closed yet.** The Inventory Service records its decision in Oracle but
+does not yet tell the Order Service, so orders remain `PENDING` even when stock was reserved. The
+reply leg — publishing `inventory-updated` so an order becomes `CONFIRMED` or `REJECTED`, along with
+retries, the dead-letter topic and the transactional outbox — is the integration step.
 
 ## Configuration profiles
 
@@ -288,7 +323,7 @@ documented before the next one starts.
 | 02 | Infrastructure: Docker Compose, networks, volumes, healthchecks | **Complete** |
 | 03 | Shared library: DTOs, exceptions, correlation, MDC, base entities | **Complete** |
 | 04 | Order Service: CRUD, validation, actuator, OpenAPI, Kafka producer, Redis | **Complete** |
-| 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | Planned |
+| 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | **Complete** |
 | 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | Planned |
 | 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | Planned |
 | 08 | Service discovery: Consul registration, health, KV configuration | Planned |

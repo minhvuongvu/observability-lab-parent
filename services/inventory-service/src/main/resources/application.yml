@@ -1,9 +1,12 @@
 # ---------------------------------------------------------------------------
 # Inventory Service - base configuration
 #
-# This file holds settings that are identical in every environment. Anything
-# that varies per environment belongs in application-{local,dev,prod}.yml, and
-# anything secret belongs in the environment (12-Factor config), never here.
+# Settings identical in every environment. Anything that varies belongs in
+# application-{local,dev,prod}.yml, and anything secret comes from the
+# environment (12-Factor config), never from this file.
+#
+# ./scripts/run-service.sh supplies the connection settings from
+# docker/compose/.env, so a stack published on non-default ports still works.
 # ---------------------------------------------------------------------------
 spring:
   application:
@@ -11,23 +14,126 @@ spring:
   profiles:
     default: local
   lifecycle:
-    # Grace period the container gets to drain in-flight work before exit. Slightly
-    # longer than the Order Service because consumers must finish the current batch.
+    # Longer than the Order Service: a shutdown must let the consumer finish the
+    # batch it has already polled, or those records are redelivered to whoever
+    # takes over the partition.
     timeout-per-shutdown-phase: 45s
   jackson:
     default-property-inclusion: non_null
 
+  datasource:
+    url: jdbc:oracle:thin:@//${ORACLE_DB_HOST:localhost}:${ORACLE_DB_PORT:1521}/${ORACLE_PDB:FREEPDB1}
+    username: ${INVENTORY_DB_USER:inventory_user}
+    password: ${INVENTORY_DB_PASSWORD:LocalDevInventory1}
+    hikari:
+      pool-name: inventory-db-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      # Longer than the Order Service's 3s: Oracle is measurably slower to
+      # establish a connection, and a timeout tuned for PostgreSQL produces
+      # spurious failures here.
+      connection-timeout: 5000
+      validation-timeout: 3000
+      max-lifetime: 900000
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema; Hibernate only checks that it matches.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 25
+        order_inserts: true
+        order_updates: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      connect-timeout: 2s
+    web:
+      pageable:
+        default-page-size: 20
+        max-page-size: 100
+
+  cache:
+    type: redis
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # Named for what it does, per the platform convention
+      # <service>-<topic>-group. The group id is the unit of offset tracking;
+      # changing it silently replays the topic from auto-offset-reset.
+      group-id: inventory-order-created-group
+      # A new consumer group reads the topic from the beginning. For a stock
+      # service that is the correct default: missing an order-created means
+      # stock is never reserved, and there is nothing to reconcile against.
+      auto-offset-reset: earliest
+      # Offsets are committed by the container after a record is handled, not
+      # on a timer. Auto-commit acknowledges records that may never be
+      # processed if the service dies mid-batch.
+      enable-auto-commit: false
+      # Deserializers are set as instances in KafkaConsumerConfiguration.
+      properties:
+        # Generous: a slow Oracle write must not be mistaken for a dead consumer
+        # and trigger a rebalance mid-batch.
+        max.poll.interval.ms: 300000
+        isolation.level: read_committed
+      max-poll-records: 50
+    listener:
+      # Commit the offset after each record, so a crash replays at most one.
+      ack-mode: record
+      # One thread per partition of order-created. More would idle; fewer would
+      # leave partitions unattended while others queue.
+      concurrency: 3
+
 server:
   port: 8082
-  # Stop accepting new connections but finish in-flight work on SIGTERM.
   shutdown: graceful
 
-# Service identity. These three values are stamped onto every log line, metric
-# tag and span attribute so telemetry can be sliced by service and environment.
+# Service identity. Stamped onto every log line, metric tag and span attribute.
 app:
   name: ${spring.application.name}
   version: @project.version@
   environment: local
+
+  kafka:
+    topics:
+      order-created: order-created
+
+  cache:
+    # Shorter than the Order Service's: stock changes far more often than an
+    # order does, and a stale availability figure is the one that oversells.
+    stock-ttl: 2m
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState, db, redis
+  info:
+    env:
+      enabled: true
 
 logging:
   level:
