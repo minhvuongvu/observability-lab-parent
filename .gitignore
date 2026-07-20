@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Maven / Java build output
+# ---------------------------------------------------------------------------
+target/
+*.class
+dependency-reduced-pom.xml
+release.properties
+pom.xml.versionsBackup
+pom.xml.releaseBackup
+pom.xml.tag
+pom.xml.next
+buildNumber.properties
+.mvn/timing.properties
+
+# Note: .mvn/wrapper/ is deliberately NOT ignored. Committing the wrapper pins
+# the build tool so every machine and CI runner builds with the same Maven.
+
+# ---------------------------------------------------------------------------
+# IDE
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+nbproject/
+*.swp
+
+# ---------------------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Local environment and secrets
+#
+# Credentials are supplied through the environment (12-Factor config) and must
+# never be committed. Templates ending in .example are tracked on purpose.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+secrets/
+
+# ---------------------------------------------------------------------------
+# Runtime artefacts produced by local services and infrastructure containers
+# ---------------------------------------------------------------------------
+*.log
+logs/
+data/
+tmp/

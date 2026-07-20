@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Inventory Service - base configuration
+#
+# This file holds settings that are identical in every environment. Anything
+# that varies per environment belongs in application-{local,dev,prod}.yml, and
+# anything secret belongs in the environment (12-Factor config), never here.
+# ---------------------------------------------------------------------------
+spring:
+  application:
+    name: inventory-service
+  profiles:
+    default: local
+  lifecycle:
+    # Grace period the container gets to drain in-flight work before exit. Slightly
+    # longer than the Order Service because consumers must finish the current batch.
+    timeout-per-shutdown-phase: 45s
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8082
+  # Stop accepting new connections but finish in-flight work on SIGTERM.
+  shutdown: graceful
+
+# Service identity. These three values are stamped onto every log line, metric
+# tag and span attribute so telemetry can be sliced by service and environment.
+app:
+  name: ${spring.application.name}
+  version: @project.version@
+  environment: local
+
+logging:
+  level:
+    root: INFO
+    com.observability.lab: INFO

@@ -1,0 +1,16 @@
+# Dev profile: shared integration environment.
+# Application logging stays verbose so traces and logs can be correlated while
+# features are still being exercised, but framework noise is kept down.
+app:
+  environment: dev
+
+server:
+  error:
+    include-message: always
+    include-stacktrace: never
+
+logging:
+  level:
+    root: INFO
+    com.observability.lab: DEBUG
+    org.springframework.web: INFO

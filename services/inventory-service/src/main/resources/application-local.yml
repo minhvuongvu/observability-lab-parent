@@ -1,0 +1,13 @@
+# Local profile: developer workstation, infrastructure via Docker Compose.
+# Verbose application logging, human-readable output, no external dependencies assumed.
+app:
+  environment: local
+
+server:
+  error:
+    include-message: always
+    include-stacktrace: on_param
+
+logging:
+  level:
+    com.observability.lab: DEBUG

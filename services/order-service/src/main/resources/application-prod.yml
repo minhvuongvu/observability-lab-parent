@@ -1,0 +1,18 @@
+# Prod profile: conservative defaults.
+# Nothing that leaks internals to a caller, nothing that floods the log pipeline.
+spring:
+  main:
+    banner-mode: "off"
+
+app:
+  environment: prod
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+
+logging:
+  level:
+    root: WARN
+    com.observability.lab: INFO
