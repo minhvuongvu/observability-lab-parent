@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------------------
+# Consul KV seed - stored at config/application/data.
+#
+# Every service imports this through Spring Cloud Consul Config
+# (spring.config.import = optional:consul:). Because Consul config is external
+# configuration, these values take precedence over each service's bundled
+# application.yml - which is the whole point: a setting can change here,
+# centrally and at runtime, without rebuilding or redeploying a service.
+#
+# `config/application/` is the shared context read by every service; a
+# `config/<service-name>/` document would override just that one. The consul-init
+# container writes this file into KV once Consul is healthy. To change a value
+# live, edit here and re-run consul-init, or `consul kv put config/application/data @-`;
+# services have watch enabled and pick it up within seconds.
+# ---------------------------------------------------------------------------
+
+# Overrides the application.yml default, so /actuator/info naming "Consul KV"
+# is the visible proof that this document was loaded.
+info:
+  platform:
+    config-source: "Consul KV (config/application/data)"

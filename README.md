@@ -338,10 +338,11 @@ by service and environment.
 | [docs/SystemDesign.md](docs/SystemDesign.md) | Module and package design, configuration strategy, port allocation, API and error conventions, resilience and testing strategy |
 | [docs/Infrastructure.md](docs/Infrastructure.md) | What runs in Docker, network topology, init scripts, healthchecks, data lifecycle, troubleshooting |
 | [docs/Keycloak.md](docs/Keycloak.md) | Authentication: the realm, clients, roles and users, the JWT flow, and how the gateway and services verify a token |
+| [docs/Consul.md](docs/Consul.md) | Service discovery and configuration: registration, health checks, and reading configuration from Consul KV |
 
-Deployment, Observability, Logging, Metrics, Tracing, Profiling, Kafka, Redis, Gateway, Consul,
-MinIO, Runbook, Troubleshooting, Performance and Security guides are produced by the steps that
-introduce each capability, and consolidated in step 16.
+Deployment, Observability, Logging, Metrics, Tracing, Profiling, Kafka, Redis, Gateway, MinIO,
+Runbook, Troubleshooting, Performance and Security guides are produced by the steps that introduce
+each capability, and consolidated in step 16.
 
 ---
 
@@ -359,7 +360,7 @@ documented before the next one starts.
 | 05 | Inventory Service: CRUD, validation, actuator, Kafka consumer, Redis | **Complete** |
 | 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | **Complete** |
 | 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | **Complete** |
-| 08 | Service discovery: Consul registration, health, KV configuration | Planned |
+| 08 | Service discovery: Consul registration, health, KV configuration | **Complete** |
 | 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | Planned |
 | 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | Planned |
 | 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | Planned |

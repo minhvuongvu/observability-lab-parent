@@ -25,6 +25,11 @@ services:
     container_name: lab-consul
     restart: unless-stopped
     command: ["agent", "-config-dir=/consul/config"]
+    extra_hosts:
+      # Consul HTTP-health-checks the services, which run on the host while it
+      # runs in a container. This resolves host.docker.internal to the host from
+      # inside the container, exactly as the gateway does for its upstreams.
+      - "host.docker.internal:host-gateway"
     environment:
       # The image entrypoint resolves the bind address from this interface.
       # Without it a container with several addresses refuses to start.
@@ -50,6 +55,34 @@ services:
       resources:
         limits:
           memory: 384M
+
+  # -------------------------------------------------------------------------
+  # Consul KV seed (one-shot).
+  #
+  # Writes the shared configuration document into config/application/data once
+  # Consul is healthy, then exits. Idempotent - re-running overwrites the same
+  # key. The services read it through Spring Cloud Consul Config. Treated as a
+  # one-shot by ./scripts/infra.sh, which expects it to exit 0.
+  # -------------------------------------------------------------------------
+  consul-init:
+    image: ${CONSUL_IMAGE}
+    container_name: lab-consul-init
+    depends_on:
+      consul:
+        condition: service_healthy
+    environment:
+      CONSUL_HTTP_ADDR: http://consul:8500
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        consul kv put config/application/data @/consul-kv/application.yaml
+        echo "Consul KV seeded: config/application/data"
+    volumes:
+      - ../../infrastructure/consul/kv/application.yaml:/consul-kv/application.yaml:ro
+    networks:
+      - lab-app
+    restart: "no"
 
   # -------------------------------------------------------------------------
   # Keycloak - OIDC identity provider.

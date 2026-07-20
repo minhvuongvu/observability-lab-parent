@@ -49,6 +49,8 @@ export REDIS_PORT="${REDIS_PORT:-6379}"
 export KAFKA_BOOTSTRAP_SERVERS="${HOST}:${KAFKA_EXTERNAL_PORT:-9092}"
 export ORACLE_DB_HOST="${HOST}"
 export ORACLE_DB_PORT="${ORACLE_PORT:-1521}"
+export CONSUL_HOST="${HOST}"
+export CONSUL_PORT="${CONSUL_PORT:-8500}"
 
 JAR="$(find "${REPO_ROOT}/services/${SERVICE}/target" -maxdepth 1 -name "${SERVICE}-*.jar" \
         ! -name '*.original' 2>/dev/null | head -1)"
@@ -61,6 +63,7 @@ echo "Starting ${SERVICE}"
 echo "  database  ${ORDER_DB_HOST}:${ORDER_DB_PORT}"
 echo "  redis     ${REDIS_HOST}:${REDIS_PORT}"
 echo "  kafka     ${KAFKA_BOOTSTRAP_SERVERS}"
+echo "  consul    ${CONSUL_HOST}:${CONSUL_PORT}"
 echo
 
 # java_bin resolves java or java.exe; the bare path does not exist on Windows.

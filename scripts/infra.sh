@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="$(cd "${SCRIPT_DIR}/../docker/compose" && pwd)"
 
 # Containers that legitimately run to completion and exit.
-ONESHOT_SERVICES="kafka-init minio-init"
+ONESHOT_SERVICES="kafka-init minio-init consul-init"
 
 # How long to wait for the stack to become healthy. Oracle dominates this:
 # a first boot initialises the database and can take several minutes.

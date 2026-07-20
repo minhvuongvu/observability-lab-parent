@@ -30,6 +30,14 @@ spring:
           # by the decoder configured from app.security.issuer-uri below.
           jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://localhost:8080/realms/observability/protocol/openid-connect/certs}
 
+  config:
+    # Pull configuration overrides from Consul KV before the context starts.
+    # Optional, so the service still boots when Consul is absent (tests, or a
+    # standalone run); when present, KV values take precedence over this file.
+    # The Consul host/port are read from spring.cloud.consul below. See
+    # docs/Consul.md.
+    import: "optional:consul:"
+
   datasource:
     url: jdbc:postgresql://${ORDER_DB_HOST:localhost}:${ORDER_DB_PORT:5432}/${ORDER_DB_NAME:orderdb}
     username: ${ORDER_DB_USER:order_user}
@@ -84,6 +92,39 @@ spring:
     type: redis
 
   cloud:
+    consul:
+      host: ${CONSUL_HOST:localhost}
+      port: ${CONSUL_PORT:8500}
+      discovery:
+        register: true
+        deregister: true
+        prefer-ip-address: false
+        # The address Consul stores and health-checks back on. This service runs
+        # on the host while Consul runs in a container, so it advertises the same
+        # host.docker.internal the gateway resolves to. It becomes the compose
+        # service name once the service itself is containerised.
+        hostname: ${SERVICE_HOSTNAME:host.docker.internal}
+        health-check-path: /actuator/health
+        health-check-interval: 10s
+        instance-id: ${spring.application.name}:${server.port}
+        tags:
+          - observability-lab
+        # A registry that is briefly down must not stop the service from
+        # starting; it registers as soon as Consul returns.
+        fail-fast: false
+      config:
+        enabled: true
+        # Consul unreachable at startup is not fatal: the service falls back to
+        # its bundled application.yml. Pairs with the optional: config import.
+        fail-fast: false
+        # KV holds a YAML document under config/<context>/data rather than one
+        # key per property, so an override reads like the file it overrides.
+        format: yaml
+        prefix: config
+        default-context: application
+        data-key: data
+        watch:
+          enabled: true
     openfeign:
       client:
         config:
@@ -142,6 +183,13 @@ app:
       # reads them from without a custom Options bean.
       url: ${INVENTORY_SERVICE_URL:http://localhost:8082}
 
+# Surfaced at /actuator/info (management.info.env.enabled below). The default
+# names this file; a value seeded into Consul KV (config/application/data)
+# overrides it - the visible proof that externalised configuration is read.
+info:
+  platform:
+    config-source: "application.yml default (Consul KV not applied)"
+
 management:
   endpoints:
     web:
@@ -162,6 +210,12 @@ management:
         # database or cache genuinely does change.
         readiness:
           include: readinessState, db, redis
+  # The registry's own reachability must not drag down this service's health: if
+  # it did, Consul health-checking /actuator/health would couple each service to
+  # the very component doing the checking.
+  health:
+    consul:
+      enabled: false
   info:
     env:
       enabled: true
