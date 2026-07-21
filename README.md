@@ -358,9 +358,10 @@ by service and environment.
 | [docs/Metrics.md](docs/Metrics.md) | Micrometer instrument types, common tags and cardinality, histograms vs pre-computed percentiles, Prometheus and VictoriaMetrics, rules and dashboards |
 | [docs/Tracing.md](docs/Tracing.md) | The OpenTelemetry agent, the collector fan-out to Tempo/Jaeger/Zipkin, span attributes, events, status and links, and cross-signal correlation |
 | [docs/Profiling.md](docs/Profiling.md) | Continuous profiling with async-profiler and Pyroscope: CPU, allocation, live heap and lock contention, and the trace-to-profile link |
+| [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the ten dashboards, and where to look by symptom |
 
-Deployment, Observability, Gateway, Runbook, Troubleshooting, Performance and Security guides are
-produced by the steps that introduce each capability, and consolidated in step 16.
+Deployment, Gateway, Runbook, Troubleshooting, Performance and Security guides are produced by the
+steps that introduce each capability, and consolidated in step 16.
 
 ---
 
@@ -384,7 +385,7 @@ documented before the next one starts.
 | 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | **Complete** |
 | 12 | Tracing: OpenTelemetry SDK and Collector, Tempo, Jaeger, Zipkin | Planned |
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | **Complete** |
-| 14 | Dashboards: production-quality Grafana dashboards per signal | Planned |
+| 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
 | 15 | Failure simulation: timeouts, leaks, CPU spikes, DLQ, circuit breakers | Planned |
 | 16 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 

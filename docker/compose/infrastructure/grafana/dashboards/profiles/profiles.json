@@ -1,0 +1,181 @@
+{
+  "uid": "lab-profiles",
+  "title": "Profiles \u2014 CPU, Allocation, Locks",
+  "description": "Continuous profiles from Pyroscope. Flame graphs are interactive and belong in Explore rather than on a fixed panel, so this dashboard sets up the four views and links to them. The most useful path is Explore \u2192 Tempo \u2192 a slow span \u2192 Profiles tab, which shows the CPU that span actually burned. See docs/Profiling.md.",
+  "tags": [
+    "observability-lab",
+    "profiles"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "custom",
+        "query": "order-service,inventory-service",
+        "current": {
+          "text": "order-service",
+          "value": "order-service"
+        },
+        "options": [
+          {
+            "text": "order-service",
+            "value": "order-service",
+            "selected": true
+          },
+          {
+            "text": "inventory-service",
+            "value": "inventory-service",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "CPU",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "flamegraph",
+      "id": 1,
+      "title": "CPU (itimer)",
+      "description": "Where wall-clock time went. itimer rather than cpu, so time spent blocked on a database is attributed rather than invisible.",
+      "datasource": {
+        "type": "grafana-pyroscope-datasource",
+        "uid": "pyroscope"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "profile",
+          "profileTypeId": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+          "labelSelector": "{service_name=\"$service\"}",
+          "groupBy": []
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Memory",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      }
+    },
+    {
+      "type": "flamegraph",
+      "id": 2,
+      "title": "Allocation",
+      "description": "What allocated the most. Most of this is short-lived garbage the collector reclaims for free \u2014 compare with the live panel beside it.",
+      "datasource": {
+        "type": "grafana-pyroscope-datasource",
+        "uid": "pyroscope"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "profile",
+          "profileTypeId": "memory:alloc_in_new_tlab_bytes:bytes:space:bytes",
+          "labelSelector": "{service_name=\"$service\"}",
+          "groupBy": []
+        }
+      ]
+    },
+    {
+      "type": "flamegraph",
+      "id": 3,
+      "title": "Live heap",
+      "description": "What is still retained, from PYROSCOPE_ALLOC_LIVE. This is the one that finds a leak: allocation volume alone says nothing about what is being held, because most allocation is short-lived garbage the collector reclaims for free.",
+      "datasource": {
+        "type": "grafana-pyroscope-datasource",
+        "uid": "pyroscope"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "profile",
+          "profileTypeId": "memory:live:count:objects:count",
+          "labelSelector": "{service_name=\"$service\"}",
+          "groupBy": []
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "Lock contention",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      }
+    },
+    {
+      "type": "flamegraph",
+      "id": 4,
+      "title": "Lock contention",
+      "description": "Which locks threads waited on, sampled for any lock held longer than 10ms. Contention is invisible in CPU profiles because a blocked thread burns no CPU.",
+      "datasource": {
+        "type": "grafana-pyroscope-datasource",
+        "uid": "pyroscope"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "profile",
+          "profileTypeId": "mutex:contentions:count:contentions:count",
+          "labelSelector": "{service_name=\"$service\"}",
+          "groupBy": []
+        }
+      ]
+    }
+  ]
+}

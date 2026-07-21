@@ -87,12 +87,25 @@ public class MetricsAutoConfiguration {
     /**
      * Which timers earn a histogram.
      *
-     * <p>Deliberately a short list. These are the latencies a user or another service actually waits
-     * on; everything else keeps the cheap count/sum/max form.
+     * <p>Deliberately a short list, and every entry is a latency something actually waits on.
+     * Everything else keeps the cheap count/sum/max form.
+     *
+     * <p>The three infrastructure timers are here because a <em>percentile</em> of each answers a
+     * question a mean cannot. Mean connection-acquire time stays flat while one request in a hundred
+     * waits two seconds for the pool — and that one request is the incident. The same argument
+     * applies to Redis commands and to GC pauses, where the tail is the whole story.
+     *
+     * <p>The cost is bounded: two pools, one Redis client and a handful of GC causes, so this adds
+     * tens of series rather than thousands. A histogram on a per-endpoint or per-SKU timer would be
+     * a very different proposition.
      */
     private static boolean shouldHaveHistogram(String name) {
         return name.startsWith("http.server.requests")
                 || name.startsWith("http.client.requests")
-                || name.startsWith(MetricTags.NAMESPACE);
+                || name.startsWith(MetricTags.NAMESPACE)
+                || name.startsWith("hikaricp.connections.acquire")
+                || name.startsWith("hikaricp.connections.usage")
+                || name.startsWith("lettuce.command.completion")
+                || name.equals("jvm.gc.pause");
     }
 }

@@ -44,6 +44,16 @@ scrape_configs:
   - job_name: observability-lab-services
     metrics_path: /actuator/prometheus
     scrape_interval: 10s
+    # The services already stamp `service` onto every meter as a common tag
+    # (MetricsAutoConfiguration). Without honor_labels Prometheus treats the
+    # target label below as authoritative and renames the application's to
+    # `exported_service` - leaving two labels with identical values and every
+    # dashboard query having to guess which one is real.
+    #
+    # honor_labels lets the scraped value win where it exists, while the target
+    # label still applies to synthesised series like `up`, which carry no labels
+    # of their own and are exactly what the ServiceDown alert reads.
+    honor_labels: true
     static_configs:
       - targets: ["host.docker.internal:8081"]
         labels:
