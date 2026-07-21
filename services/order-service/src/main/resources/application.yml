@@ -257,8 +257,24 @@ management:
   endpoints:
     web:
       exposure:
-        # Deliberately narrow. Prometheus scraping arrives with the metrics step.
-        include: health,info,metrics
+        # Deliberately narrow: named endpoints, never `*`. Actuator exposes
+        # heapdump, env and configprops among others, and any of those on an
+        # open port is a credential leak rather than an observability feature.
+        include: health,info,metrics,prometheus
+  # Metrics. Common tags (service, environment, version) and the latency
+  # histograms are applied by the shared library's MetricsAutoConfiguration, so
+  # every service tags identically without having to remember to.
+  metrics:
+    distribution:
+      # Server-side percentiles from bucket counts, not client-side
+      # pre-computed ones: a pre-computed 99th percentile cannot be aggregated
+      # across instances, so it becomes meaningless the moment this scales out.
+      percentiles-histogram:
+        http.server.requests: true
+      # SLO boundaries get their own buckets, so "what fraction of requests
+      # were under 500ms" is an exact bucket ratio rather than an interpolation.
+      slo:
+        http.server.requests: 50ms,100ms,250ms,500ms,1s,2s
   endpoint:
     health:
       show-details: when-authorized

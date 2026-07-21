@@ -14,6 +14,7 @@ import com.observability.lab.inventory.domain.InventoryErrorCode;
 import com.observability.lab.inventory.domain.StockLevel;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,7 +51,8 @@ class StockApplicationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new StockApplicationService(stockLevels, processedEvents, cacheManager);
+        service = new StockApplicationService(stockLevels, processedEvents, cacheManager,
+                new StockMetrics(new SimpleMeterRegistry()));
         when(stockLevels.save(any(StockLevel.class))).thenAnswer(call -> call.getArgument(0));
     }
 

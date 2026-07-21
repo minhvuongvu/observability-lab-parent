@@ -355,10 +355,11 @@ by service and environment.
 | [docs/Redis.md](docs/Redis.md) | Caching: what is cached and what deliberately is not, key layout, TTL, eviction and after-commit invalidation |
 | [docs/MinIO.md](docs/MinIO.md) | Object storage: the invoice bucket, least-privilege credentials, upload timing, object naming and signed URLs |
 | [docs/Logging.md](docs/Logging.md) | Structured JSON logs, the MDC lifecycle, the three shipping pipelines, Loki vs OpenSearch, label cardinality and the Grafana dashboard |
+| [docs/Metrics.md](docs/Metrics.md) | Micrometer instrument types, common tags and cardinality, histograms vs pre-computed percentiles, Prometheus and VictoriaMetrics, rules and dashboards |
 
-Deployment, Observability, Metrics, Tracing, Profiling, Gateway, Runbook, Troubleshooting,
-Performance and Security guides are produced by the steps that introduce each capability, and
-consolidated in step 16.
+Deployment, Observability, Tracing, Profiling, Gateway, Runbook, Troubleshooting, Performance and
+Security guides are produced by the steps that introduce each capability, and consolidated in
+step 16.
 
 ---
 
@@ -379,7 +380,7 @@ documented before the next one starts.
 | 08 | Service discovery: Consul registration, health, KV configuration | **Complete** |
 | 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | **Complete** |
 | 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | **Complete** |
-| 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | Planned |
+| 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | **Complete** |
 | 12 | Tracing: OpenTelemetry SDK and Collector, Tempo, Jaeger, Zipkin | Planned |
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | Planned |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | Planned |

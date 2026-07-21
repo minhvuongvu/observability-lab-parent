@@ -1,5 +1,6 @@
 package com.observability.lab.order.infrastructure.messaging;
 
+import com.observability.lab.order.application.OrderMetrics;
 import com.observability.lab.order.domain.OutboxEvent;
 import com.observability.lab.order.infrastructure.persistence.OutboxEventJpaRepository;
 import com.observability.lab.shared.correlation.CorrelationContext;
@@ -51,16 +52,18 @@ public class OutboxRelay {
     private final OutboxEventJpaRepository outbox;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ServiceIdentity identity;
+    private final OrderMetrics metrics;
     private final int batchSize;
     private final Duration retention;
 
     public OutboxRelay(OutboxEventJpaRepository outbox, KafkaTemplate<String, String> kafkaTemplate,
-            ServiceIdentity identity,
+            ServiceIdentity identity, OrderMetrics metrics,
             @Value("${app.outbox.batch-size}") int batchSize,
             @Value("${app.outbox.retention}") Duration retention) {
         this.outbox = outbox;
         this.kafkaTemplate = kafkaTemplate;
         this.identity = identity;
+        this.metrics = metrics;
         this.batchSize = batchSize;
         this.retention = retention;
     }
@@ -79,19 +82,33 @@ public class OutboxRelay {
     public void publishPending() {
         List<OutboxEvent> batch = outbox.claimUnpublished(PageRequest.of(0, batchSize));
         if (batch.isEmpty()) {
+            // Still refresh the gauge: an empty batch is the normal case, and it is how the backlog
+            // gets reported as zero rather than staying at its last non-zero reading forever.
+            metrics.outboxBacklog(0);
             return;
         }
 
+        // A long task timer, so a pass wedged against an unreachable broker is visible *while* it is
+        // stuck. A plain timer records nothing until the work finishes, which is precisely the wrong
+        // behaviour for the failure it would be used to detect.
+        var pass = metrics.startRelayPass();
         int published = 0;
-        for (OutboxEvent event : batch) {
-            if (publish(event)) {
-                published++;
+        try {
+            for (OutboxEvent event : batch) {
+                if (publish(event)) {
+                    published++;
+                }
             }
+        } finally {
+            pass.stop();
         }
+
+        long stillPending = outbox.countUnpublished();
+        metrics.outboxBacklog(stillPending);
 
         if (published < batch.size()) {
             log.warn("Outbox relay published {} of {} claimed event(s); {} still pending overall",
-                    published, batch.size(), outbox.countUnpublished());
+                    published, batch.size(), stillPending);
         } else {
             log.debug("Outbox relay published {} event(s)", published);
         }

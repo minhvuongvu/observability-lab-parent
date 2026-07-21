@@ -13,6 +13,7 @@ import com.observability.lab.order.domain.OrderItem;
 import com.observability.lab.order.domain.OrderStatus;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
@@ -50,7 +51,8 @@ class OrderApplicationServiceTest {
     @BeforeEach
     void setUp() {
         service = new OrderApplicationService(orders, new OrderNumberGenerator(), events,
-                invoices, invoiceRenderer, Duration.ofMinutes(15));
+                invoices, invoiceRenderer, new OrderMetrics(new SimpleMeterRegistry()),
+                Duration.ofMinutes(15));
     }
 
     private static Order existingOrder() {

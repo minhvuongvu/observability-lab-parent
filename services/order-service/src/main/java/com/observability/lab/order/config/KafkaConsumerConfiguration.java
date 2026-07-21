@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.observability.lab.order.infrastructure.messaging.InventoryUpdatedMessage;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ValidationException;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,6 +16,7 @@ import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.MicrometerConsumerListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -45,17 +47,24 @@ public class KafkaConsumerConfiguration {
 
     @Bean
     public ConsumerFactory<String, InventoryUpdatedMessage> inventoryUpdatedConsumerFactory(
-            KafkaProperties kafkaProperties, SslBundles sslBundles, ObjectMapper objectMapper) {
+            KafkaProperties kafkaProperties, SslBundles sslBundles, ObjectMapper objectMapper,
+            MeterRegistry meterRegistry) {
 
         // false: ignore any type header and always deserialise to this type. Trusting a class name
         // from the wire would let a producer choose which class this service instantiates.
         JsonDeserializer<InventoryUpdatedMessage> valueDeserializer =
                 new JsonDeserializer<>(InventoryUpdatedMessage.class, objectMapper, false);
 
-        return new DefaultKafkaConsumerFactory<>(
-                kafkaProperties.buildConsumerProperties(sslBundles),
-                new StringDeserializer(),
-                new ErrorHandlingDeserializer<>(valueDeserializer));
+        DefaultKafkaConsumerFactory<String, InventoryUpdatedMessage> factory =
+                new DefaultKafkaConsumerFactory<>(
+                        kafkaProperties.buildConsumerProperties(sslBundles),
+                        new StringDeserializer(),
+                        new ErrorHandlingDeserializer<>(valueDeserializer));
+
+        // Consumer lag, fetch latency and rebalance counts come from here. A custom ConsumerFactory
+        // bean disables Boot's auto-configured listener, so it has to be added explicitly.
+        factory.addListener(new MicrometerConsumerListener<>(meterRegistry));
+        return factory;
     }
 
     @Bean

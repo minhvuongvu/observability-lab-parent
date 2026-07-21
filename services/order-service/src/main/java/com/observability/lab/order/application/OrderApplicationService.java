@@ -49,17 +49,19 @@ public class OrderApplicationService {
     private final ApplicationEventPublisher events;
     private final InvoiceArchive invoices;
     private final InvoiceRenderer invoiceRenderer;
+    private final OrderMetrics metrics;
     private final Duration invoiceUrlValidity;
 
     public OrderApplicationService(OrderRepository orders, OrderNumberGenerator orderNumbers,
             ApplicationEventPublisher events, InvoiceArchive invoices,
-            InvoiceRenderer invoiceRenderer,
+            InvoiceRenderer invoiceRenderer, OrderMetrics metrics,
             @Value("${app.invoice.url-validity}") Duration invoiceUrlValidity) {
         this.orders = orders;
         this.orderNumbers = orderNumbers;
         this.events = events;
         this.invoices = invoices;
         this.invoiceRenderer = invoiceRenderer;
+        this.metrics = metrics;
         this.invoiceUrlValidity = invoiceUrlValidity;
     }
 
@@ -82,6 +84,8 @@ public class OrderApplicationService {
         // Raised in-process. It reaches Kafka only after this transaction commits, so an order that
         // rolls back never announces itself. See KafkaOrderEventPublisher.
         events.publishEvent(OrderCreatedEvent.from(saved));
+
+        metrics.orderAccepted(saved.getCurrency(), saved.getTotalAmount());
 
         try (var scope = LogContext.with("order_number", saved.getOrderNumber())
                 .and("customer_id", saved.getCustomerId())) {
@@ -160,6 +164,7 @@ public class OrderApplicationService {
                 order.reject();
             }
             Order saved = orders.save(order);
+            metrics.orderSettled(target);
 
             log.info("Order settled as {}", target);
             return OrderView.from(saved);
@@ -203,6 +208,7 @@ public class OrderApplicationService {
         Order order = require(orderNumber);
         order.cancel();
         Order saved = orders.save(order);
+        metrics.orderCancelled();
 
         try (var scope = LogContext.with("order_number", orderNumber)) {
             log.info("Order cancelled");

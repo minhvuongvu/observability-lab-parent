@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------------------
+# Recording and alerting rules.
+#
+# Deliberately few. A rule that fires on something nobody would act on trains
+# people to ignore the alert channel, and an alert channel that is ignored is
+# worse than no alerting at all. Each of these describes a condition a person
+# would genuinely want to be woken for, or a query expensive enough to be worth
+# precomputing.
+#
+# There is no Alertmanager in this lab: these evaluate and show up as firing in
+# Prometheus and Grafana, which is enough to see the mechanics without adding a
+# routing and paging component that step 11 does not call for.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  # -------------------------------------------------------------------------
+  # Recording rules: precomputed answers to questions dashboards ask
+  # constantly. Evaluating them once here is cheaper than every panel doing
+  # the same aggregation on every refresh.
+  # -------------------------------------------------------------------------
+  - name: lab-recording
+    interval: 30s
+    rules:
+      - record: lab:http_request_rate:5m
+        expr: sum by (service) (rate(http_server_requests_seconds_count[5m]))
+
+      - record: lab:http_error_rate:5m
+        expr: |
+          sum by (service) (rate(http_server_requests_seconds_count{outcome=~"SERVER_ERROR|CLIENT_ERROR"}[5m]))
+
+      # The 99th percentile computed from bucket counts, which is the only form
+      # that aggregates correctly across instances.
+      - record: lab:http_latency_p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[5m])))
+
+  # -------------------------------------------------------------------------
+  # Alerts.
+  # -------------------------------------------------------------------------
+  - name: lab-alerts
+    interval: 30s
+    rules:
+
+      - alert: ServiceDown
+        # `up` is synthesised by Prometheus per scrape, so this fires when a
+        # service stops answering rather than when it reports being unwell.
+        # That distinction matters: a process that has died reports nothing at
+        # all, and a health-based alert would simply go quiet.
+        expr: up{job="observability-lab-services"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} is not answering scrapes"
+          description: "No successful scrape of {{ $labels.instance }} for a minute."
+
+      - alert: HighHttpErrorRate
+        # A ratio, not an absolute count: 10 errors per second is a catastrophe
+        # at low traffic and noise at high traffic, and only the ratio means
+        # the same thing at both.
+        expr: |
+          lab:http_error_rate:5m / lab:http_request_rate:5m > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} is failing more than 5% of requests"
+
+      - alert: OutboxBacklogGrowing
+        # The outbox is meant to drain within seconds. A sustained backlog means
+        # the relay cannot reach Kafka, and every order accepted meanwhile is
+        # one whose stock is never reserved.
+        expr: lab_outbox_pending_events > 50
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox backlog on {{ $labels.service }} is not draining"
+          description: "{{ $value }} events are still owed to Kafka."
+
+      - alert: OrdersAcceptedButNotSettled
+        # The business signal with no technical equivalent. Every technical
+        # metric can be green while orders pile up unsettled, because nothing
+        # is failing - the answer simply never comes back.
+        expr: |
+          sum(rate(lab_orders_accepted_total[10m]))
+            - sum(rate(lab_orders_settled_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Orders are being accepted faster than they are settled"
+
+      - alert: DeadLetterMessages
+        # Any dead letter is worth a look: by definition it exhausted its
+        # retries, so nothing will pick it up automatically.
+        expr: increase(lab_messages_dead_lettered_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} dead-lettered a message"
+
+      - alert: DatabasePoolExhausted
+        # Threads waiting on a connection is the shape almost every "the site
+        # is slow" incident actually has.
+        expr: hikaricp_connections_pending > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} has threads waiting for a database connection"

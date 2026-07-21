@@ -3,6 +3,7 @@ package com.observability.lab.order.infrastructure.storage;
 import com.observability.lab.order.application.InvoiceArchive;
 import com.observability.lab.order.application.InvoiceRenderer;
 import com.observability.lab.order.application.OrderApplicationService;
+import com.observability.lab.order.application.OrderMetrics;
 import com.observability.lab.order.application.OrderCreatedEvent;
 import com.observability.lab.shared.logging.LogContext;
 import org.slf4j.Logger;
@@ -33,25 +34,32 @@ public class InvoiceUploader {
     private final OrderApplicationService orders;
     private final InvoiceRenderer renderer;
     private final InvoiceArchive archive;
+    private final OrderMetrics metrics;
 
     public InvoiceUploader(OrderApplicationService orders, InvoiceRenderer renderer,
-            InvoiceArchive archive) {
+            InvoiceArchive archive, OrderMetrics metrics) {
         this.orders = orders;
         this.renderer = renderer;
         this.archive = archive;
+        this.metrics = metrics;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onOrderCreated(OrderCreatedEvent event) {
         try (var scope = LogContext.with("order_number", event.orderNumber())) {
+            // Timed on both paths. A timer that only records successes reports a healthy latency
+            // while every upload is failing fast, which is worse than no timer at all.
+            var sample = metrics.startInvoiceUpload();
             try {
                 // Read back rather than rendering from the event: the event carries what a consumer
                 // needs to reserve stock, not what an invoice needs to show. This read is served by
                 // the cache it also warms.
                 archive.store(renderer.render(orders.findByOrderNumber(event.orderNumber())));
+                metrics.recordInvoiceUpload(sample, true);
                 log.info("Invoice archived for order '{}'", event.orderNumber());
 
             } catch (RuntimeException failure) {
+                metrics.recordInvoiceUpload(sample, false);
                 log.error("Could not archive the invoice for order '{}'. The order stands; the "
                         + "invoice will be rebuilt when it is first requested.",
                         event.orderNumber(), failure);

@@ -25,6 +25,8 @@ is not part of this stack yet.
 | Loki | `grafana/loki:3.5.7` | 3100 | Log store for the always-on pipelines |
 | Promtail | `grafana/promtail:3.5.7` | — | Log shipper, pipeline 1 |
 | Fluent Bit | `fluent/fluent-bit:4.2.7` | — | Log shipper, pipeline 2 |
+| Prometheus | `prom/prometheus:v3.7.3` | 9090 | Scrapes metrics, evaluates rules, remote-writes to VictoriaMetrics |
+| VictoriaMetrics | `victoriametrics/victoria-metrics:v1.111.0` | 8428 | Long-term metric store, answers the same PromQL |
 | Grafana | `grafana/grafana:12.2.10` | 3000 | Dashboards; datasources provisioned from files |
 
 Three further containers run once and exit: `kafka-init` declares the topics, `minio-init` creates

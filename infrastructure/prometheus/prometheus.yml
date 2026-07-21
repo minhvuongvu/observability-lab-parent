@@ -1,0 +1,117 @@
+# ---------------------------------------------------------------------------
+# Prometheus - scrapes every component that exposes metrics.
+#
+# Pull, not push, and that is the design rather than an implementation detail.
+# Prometheus deciding when to scrape means a target that has stopped answering
+# is *itself* a signal (`up == 0`); with a push model a silent target and a
+# healthy-but-idle one are indistinguishable.
+#
+# Everything scraped here is also forwarded to VictoriaMetrics by remote_write
+# at the bottom of this file, so the same samples land in two stores and can be
+# compared from the same Grafana.
+# ---------------------------------------------------------------------------
+
+global:
+  # 15s is the usual starting point: fine enough to see a spike inside a
+  # one-minute alert window, coarse enough that the series count stays sane.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # Attached to every series leaving this Prometheus, which is what makes two
+  # servers' data distinguishable once they are federated or remote-written
+  # into the same place.
+  external_labels:
+    monitor: observability-lab
+    source: prometheus
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+
+  # -------------------------------------------------------------------------
+  # The Spring Boot services.
+  #
+  # They run on the host while Prometheus runs in a container, so the target is
+  # host.docker.internal - the same indirection Consul uses to health-check
+  # them. Once the services are containerised these become their compose
+  # service names.
+  #
+  # Static targets rather than Consul service discovery: the two services are
+  # known and fixed here, and a static list makes a missing target obvious
+  # rather than silently absent. Swapping in consul_sd_config is a one-block
+  # change when instances become dynamic.
+  # -------------------------------------------------------------------------
+  - job_name: observability-lab-services
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+        labels:
+          service: order-service
+      - targets: ["host.docker.internal:8082"]
+        labels:
+          service: inventory-service
+    relabel_configs:
+      # `instance` defaults to the scrape address, which is an implementation
+      # detail nobody wants on a dashboard legend.
+      - source_labels: [__address__]
+        target_label: instance
+    metric_relabel_configs:
+      # Drop the per-percentile series Micrometer would publish alongside the
+      # histogram buckets. The buckets are the aggregatable form; keeping both
+      # doubles the series count for no additional answer.
+      - source_labels: [__name__]
+        regex: '.*_percentile$'
+        action: drop
+
+  # -------------------------------------------------------------------------
+  # Prometheus scrapes itself. Cheap, and it is how you find out that the
+  # thing watching everything else has stopped.
+  # -------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # -------------------------------------------------------------------------
+  # Infrastructure that speaks Prometheus natively. No exporter needed for
+  # these; the ones that would need an exporter (PostgreSQL, Oracle, Redis)
+  # are deliberately left for a later step rather than half-added here.
+  # -------------------------------------------------------------------------
+  - job_name: victoriametrics
+    static_configs:
+      - targets: ["victoriametrics:8428"]
+
+  - job_name: loki
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: grafana
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["grafana:3000"]
+
+  # Kong is deliberately absent. Its admin port serves no Prometheus endpoint
+  # unless the `prometheus` plugin is enabled in kong.yml, and it sits on the
+  # edge network rather than this one - so scraping it means both a gateway
+  # change and a network change. Gateway metrics belong with a revision of
+  # step 06, not bolted on here where the job would simply show as down.
+
+# ---------------------------------------------------------------------------
+# Long-term storage.
+#
+# VictoriaMetrics receives a copy of every sample. It stores the same data far
+# more compactly and answers the same PromQL, which is exactly why both are
+# here: the lab can compare them on identical input rather than on claims.
+#
+# Prometheus keeps a short local retention and remains the source for alerting;
+# VictoriaMetrics is the one to query for anything older.
+# ---------------------------------------------------------------------------
+remote_write:
+  - url: http://victoriametrics:8428/api/v1/write
+    queue_config:
+      # Bounded. An unbounded queue against a slow remote turns a storage
+      # problem into a Prometheus memory problem.
+      capacity: 10000
+      max_samples_per_send: 2000
+      max_shards: 4

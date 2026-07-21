@@ -47,12 +47,15 @@ public class StockApplicationService {
     private final StockLevelRepository stockLevels;
     private final ProcessedEventRepository processedEvents;
     private final CacheManager cacheManager;
+    private final StockMetrics metrics;
 
     public StockApplicationService(StockLevelRepository stockLevels,
-            ProcessedEventRepository processedEvents, CacheManager cacheManager) {
+            ProcessedEventRepository processedEvents, CacheManager cacheManager,
+            StockMetrics metrics) {
         this.stockLevels = stockLevels;
         this.processedEvents = processedEvents;
         this.cacheManager = cacheManager;
+        this.metrics = metrics;
     }
 
     // --- CRUD ---------------------------------------------------------------
@@ -151,6 +154,17 @@ public class StockApplicationService {
      * <p>Telling the Order Service the outcome is the integration step's job; this returns it.
      */
     public ReservationResult reserveForOrder(String eventId, String orderNumber,
+            List<ReservationLine> lines) {
+
+        var sample = metrics.start();
+        ReservationResult result = decide(eventId, orderNumber, lines);
+        // Recorded on every path, including the redelivery one. A timer that skips the cheap cases
+        // reports a latency distribution that describes work the service is not actually doing.
+        metrics.recordOutcome(sample, result);
+        return result;
+    }
+
+    private ReservationResult decide(String eventId, String orderNumber,
             List<ReservationLine> lines) {
 
         if (processedEvents.hasProcessed(eventId)) {

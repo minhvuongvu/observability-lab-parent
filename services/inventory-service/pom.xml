@@ -83,6 +83,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- Renders the meter registry in Prometheus' exposition format at
+             /actuator/prometheus, which is what Prometheus and VictoriaMetrics
+             both scrape. Micrometer itself comes with actuator; this is the
+             backend-specific half. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 
         <!-- Security: validates Keycloak-issued JWTs. Activates the shared
              ResourceServerAutoConfiguration by putting the resource-server

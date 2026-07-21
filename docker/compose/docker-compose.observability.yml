@@ -267,7 +267,85 @@ services:
           memory: 768M
 
   # -------------------------------------------------------------------------
-  # Grafana - where the logs are actually read.
+  # Prometheus - scrapes every component that exposes metrics, evaluates the
+  # alert rules, and remote-writes a copy of everything to VictoriaMetrics.
+  #
+  # Pull rather than push: Prometheus deciding when to scrape means a target
+  # that has stopped answering is itself a signal (`up == 0`), which a push
+  # model cannot distinguish from a target that is merely idle.
+  # -------------------------------------------------------------------------
+  prometheus:
+    image: ${PROMETHEUS_IMAGE}
+    container_name: lab-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Short local retention: Prometheus is the alerting engine and the recent
+      # window. Anything older is a VictoriaMetrics query.
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-lifecycle
+    extra_hosts:
+      # The services run on the host; this is how a container reaches them,
+      # exactly as Consul does to health-check them.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${BIND_HOST}:${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ../../infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../infrastructure/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9090/-/healthy | grep -q Healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # -------------------------------------------------------------------------
+  # VictoriaMetrics - the second metrics store.
+  #
+  # Receives a copy of every sample by remote_write and answers the same
+  # PromQL, which is the point of having both: the same input, two engines,
+  # comparable from one Grafana. It stores the data considerably more
+  # compactly and is the one to query for anything beyond Prometheus' 24h.
+  # -------------------------------------------------------------------------
+  victoriametrics:
+    image: ${VICTORIAMETRICS_IMAGE}
+    container_name: lab-victoriametrics
+    restart: unless-stopped
+    command:
+      - --storageDataPath=/victoria-metrics-data
+      - --retentionPeriod=30d
+      - --httpListenAddr=:8428
+      # Deduplicate samples that arrive within the scrape interval, which is
+      # what makes a remote_write from two Prometheus replicas idempotent.
+      - --dedup.minScrapeInterval=10s
+    ports:
+      - "${BIND_HOST}:${VICTORIAMETRICS_PORT}:8428"
+    volumes:
+      - victoriametrics-data:/victoria-metrics-data
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8428/health | grep -q OK"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Grafana - where the logs and metrics are actually read.
   #
   # Datasources and dashboards are provisioned from files rather than clicked
   # in: a dashboard that exists only in someone's browser is not part of the
@@ -280,6 +358,8 @@ services:
     restart: unless-stopped
     depends_on:
       loki:
+        condition: service_healthy
+      prometheus:
         condition: service_healthy
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
@@ -321,6 +401,10 @@ networks:
     driver: bridge
 
 volumes:
+  prometheus-data:
+    name: lab-prometheus-data
+  victoriametrics-data:
+    name: lab-victoriametrics-data
   loki-data:
     name: lab-loki-data
   promtail-data:

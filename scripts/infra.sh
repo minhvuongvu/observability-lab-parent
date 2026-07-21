@@ -166,6 +166,14 @@ Endpoints
   Kafka UI              http://${host}:${KAFKA_UI_PORT:-8090}
   MinIO console         http://${host}:${MINIO_CONSOLE_PORT:-9001}
 
+Observability
+  Grafana               http://${host}:${GRAFANA_PORT:-3000}
+  Prometheus            http://${host}:${PROMETHEUS_PORT:-9090}
+  VictoriaMetrics       http://${host}:${VICTORIAMETRICS_PORT:-8428}
+  Loki API              http://${host}:${LOKI_PORT:-3100}
+  OpenSearch Dashboards http://${host}:${OPENSEARCH_DASHBOARDS_PORT:-5601}   (profile: search)
+  Kibana                http://${host}:${KIBANA_PORT:-5602}   (profile: search)
+
 Data endpoints
   PostgreSQL            ${host}:${POSTGRES_PORT:-5432}
   Oracle                ${host}:${ORACLE_PORT:-1521}/${ORACLE_PDB:-FREEPDB1}

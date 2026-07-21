@@ -5,11 +5,45 @@
 # browser session is not part of the system: it cannot be reviewed, it is lost
 # when the volume is recreated, and nobody else's Grafana has it.
 #
-# Metrics, traces and profiles datasources arrive with steps 11 to 13.
+# Traces and profiles datasources arrive with steps 12 and 13.
 # ---------------------------------------------------------------------------
 apiVersion: 1
 
 datasources:
+
+  # -------------------------------------------------------------------------
+  # Prometheus - the default for metrics. Holds 24 hours locally and is the
+  # engine that evaluates the alert rules.
+  # -------------------------------------------------------------------------
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      # Must match prometheus.yml's scrape_interval, or Grafana picks step
+      # values that silently produce gaps or over-smoothed lines.
+      timeInterval: 15s
+      manageAlerts: false
+
+  # -------------------------------------------------------------------------
+  # VictoriaMetrics - the same samples, a different engine. Answers PromQL, so
+  # any panel can be pointed at either and compared on identical input. This is
+  # where to query anything older than Prometheus' local retention.
+  # -------------------------------------------------------------------------
+  - name: VictoriaMetrics
+    type: prometheus
+    uid: victoriametrics
+    access: proxy
+    url: http://victoriametrics:8428
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      manageAlerts: false
 
   # -------------------------------------------------------------------------
   # Loki - the always-on log store, fed by both Promtail and Fluent Bit.
@@ -21,7 +55,6 @@ datasources:
     # Grafana talks to Loki over the compose network, so this is the service
     # name and the internal port - not the host-published one.
     url: http://loki:3100
-    isDefault: true
     editable: false
     jsonData:
       # Cap what one careless query can pull into the browser.
