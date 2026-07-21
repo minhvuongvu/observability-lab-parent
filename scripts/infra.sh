@@ -171,6 +171,10 @@ Observability
   Prometheus            http://${host}:${PROMETHEUS_PORT:-9090}
   VictoriaMetrics       http://${host}:${VICTORIAMETRICS_PORT:-8428}
   Loki API              http://${host}:${LOKI_PORT:-3100}
+  Tempo API             http://${host}:${TEMPO_PORT:-3200}
+  Jaeger UI             http://${host}:${JAEGER_UI_PORT:-16686}
+  Zipkin UI             http://${host}:${ZIPKIN_PORT:-9411}
+  OTLP (grpc/http)      ${host}:${OTLP_GRPC_PORT:-4317} / ${host}:${OTLP_HTTP_PORT:-4318}
   OpenSearch Dashboards http://${host}:${OPENSEARCH_DASHBOARDS_PORT:-5601}   (profile: search)
   Kibana                http://${host}:${KIBANA_PORT:-5602}   (profile: search)
 

@@ -6,6 +6,7 @@ import com.observability.lab.order.application.OrderApplicationService;
 import com.observability.lab.order.application.OrderMetrics;
 import com.observability.lab.order.application.OrderCreatedEvent;
 import com.observability.lab.shared.logging.LogContext;
+import com.observability.lab.shared.tracing.Spans;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -60,6 +61,9 @@ public class InvoiceUploader {
 
             } catch (RuntimeException failure) {
                 metrics.recordInvoiceUpload(sample, false);
+                // A genuine fault, so it does get an error status and a recorded exception - which
+                // is what makes it visible on the trace rather than only in the log file.
+                Spans.failed("invoice upload failed", failure);
                 log.error("Could not archive the invoice for order '{}'. The order stands; the "
                         + "invoice will be rebuilt when it is first requested.",
                         event.orderNumber(), failure);

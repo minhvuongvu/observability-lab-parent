@@ -58,3 +58,6 @@ secrets/
 logs/
 data/
 tmp/
+
+# OpenTelemetry Java agent, resolved on demand by scripts/otel-agent.sh.
+tools/

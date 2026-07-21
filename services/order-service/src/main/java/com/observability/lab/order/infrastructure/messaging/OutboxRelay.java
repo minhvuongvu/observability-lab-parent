@@ -8,6 +8,8 @@ import com.observability.lab.shared.correlation.CorrelationFields;
 import com.observability.lab.shared.correlation.CorrelationHeaders;
 import com.observability.lab.shared.correlation.ServiceIdentity;
 import com.observability.lab.shared.logging.LogContext;
+import com.observability.lab.shared.tracing.Spans;
+import io.opentelemetry.api.trace.Span;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -139,6 +141,17 @@ public class OutboxRelay {
         try (var scope = LogContext.with("event_id", event.getEventId())
                 .and("order_number", event.getMessageKey())) {
             try {
+                // A *link*, not a parent. This publish is caused by a request that finished minutes
+                // ago; parenting to it would produce a trace with a minutes-long gap and a parent
+                // that ended before its child began. A link records the causality and leaves both
+                // timelines honest. See Spans.remoteContext.
+                var origin = Spans.remoteContext(event.getTraceId(), event.getSpanId());
+                if (origin.isValid()) {
+                    Span.current().addLink(origin);
+                }
+                Spans.attribute(Spans.ORDER_NUMBER, event.getMessageKey());
+                Spans.attribute(Spans.EVENT_ID, event.getEventId());
+
                 ProducerRecord<String, String> record = new ProducerRecord<>(
                         event.getTopic(), event.getMessageKey(), event.getPayload());
 
@@ -169,6 +182,7 @@ public class OutboxRelay {
 
             } catch (Exception failure) {
                 event.markFailed(failure.toString());
+                Spans.failed("outbox delivery failed", failure);
                 log.warn("Outbox delivery of {} failed (attempt {}); it stays queued and will be retried",
                         event.getEventType(), event.getAttempts(), failure);
                 return false;

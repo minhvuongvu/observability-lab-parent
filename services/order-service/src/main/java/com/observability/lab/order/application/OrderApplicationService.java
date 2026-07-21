@@ -8,6 +8,7 @@ import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
 import com.observability.lab.shared.exception.TechnicalException;
 import com.observability.lab.shared.logging.LogContext;
+import com.observability.lab.shared.tracing.Spans;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
@@ -87,6 +88,14 @@ public class OrderApplicationService {
 
         metrics.orderAccepted(saved.getCurrency(), saved.getTotalAmount());
 
+        // The agent's span for this request knows the URL and the status code. It cannot know which
+        // order this was, which is exactly what someone searching a trace by order number needs.
+        Spans.attribute(Spans.ORDER_NUMBER, saved.getOrderNumber());
+        Spans.attribute(Spans.CUSTOMER_ID, saved.getCustomerId());
+        Spans.attribute(Spans.CURRENCY, saved.getCurrency());
+        Spans.attribute(Spans.ORDER_TOTAL, saved.getTotalAmount().doubleValue());
+        Spans.attribute(Spans.LINE_COUNT, lines.size());
+
         try (var scope = LogContext.with("order_number", saved.getOrderNumber())
                 .and("customer_id", saved.getCustomerId())) {
             log.info("Order accepted with {} line(s), total {} {}",
@@ -149,10 +158,16 @@ public class OrderApplicationService {
 
         try (var scope = LogContext.with("order_number", orderNumber)) {
             if (order.getStatus() == target) {
+                Spans.event("order.settlement.redelivery");
                 log.debug("Order is already {}; settlement was a redelivery", target);
                 return OrderView.from(order);
             }
             if (!order.getStatus().canTransitionTo(target)) {
+                // Not an error status: an order cancelled while its reservation was in flight is
+                // the system behaving correctly, and marking the span failed would put ordinary
+                // operation into the error rate every alert is built on.
+                Spans.attribute(Spans.OUTCOME, "transition_not_allowed");
+                Spans.event("order.settlement.unapplied");
                 log.warn("Order is {} and cannot become {}; leaving the settlement unapplied",
                         order.getStatus(), target);
                 return OrderView.from(order);
@@ -165,6 +180,12 @@ public class OrderApplicationService {
             }
             Order saved = orders.save(order);
             metrics.orderSettled(target);
+
+            Spans.attribute(Spans.ORDER_NUMBER, orderNumber);
+            Spans.attribute(Spans.ORDER_STATUS, target.name());
+            // An event rather than a child span: settling is a moment, not a duration, and a
+            // zero-length span on a waterfall is noise.
+            Spans.event("order.settled");
 
             log.info("Order settled as {}", target);
             return OrderView.from(saved);

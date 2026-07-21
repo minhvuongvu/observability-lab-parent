@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# Tempo - trace store, and the one Grafana links to.
+#
+# Tempo's design choice mirrors Loki's: it does not index span contents, only
+# the trace id. Retrieving a trace you already have the id for is therefore
+# cheap and storage is compact; *searching* for traces matching a predicate is
+# the expensive operation, served separately by TraceQL over the block list.
+#
+# That is why the log -> trace link matters so much here. Grafana pulls the
+# trace id out of a log line and fetches it directly, which is the cheap path,
+# rather than searching for it.
+# ---------------------------------------------------------------------------
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # How long a trace is held in memory waiting for more spans before it is
+  # flushed. Too short and a slow span arrives after its trace has been written,
+  # producing two fragments of one trace.
+  trace_idle_period: 10s
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 168h   # A week, matching the log retention.
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+# ---------------------------------------------------------------------------
+# Metrics generated from spans.
+#
+# Tempo derives RED metrics (rate, errors, duration) and a service graph from
+# the traces flowing through it, and remote-writes them to Prometheus. This is
+# genuinely useful and slightly counter-intuitive: it means metrics about
+# service-to-service calls exist without either service having been
+# instrumented to produce them, because the spans already describe every call.
+# ---------------------------------------------------------------------------
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics]

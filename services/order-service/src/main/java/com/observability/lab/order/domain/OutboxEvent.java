@@ -74,6 +74,10 @@ public class OutboxEvent extends BaseEntity<Long> {
     @Column(name = "trace_id", length = 64)
     private String traceId;
 
+    /** The specific span that produced this event, so the relay can link to it rather than guess. */
+    @Column(name = "span_id", length = 32)
+    private String spanId;
+
     /** For JPA only. */
     protected OutboxEvent() {}
 
@@ -87,7 +91,7 @@ public class OutboxEvent extends BaseEntity<Long> {
      */
     public static OutboxEvent pending(String eventId, String eventType, String topic,
             String messageKey, String payload, Instant occurredAt,
-            String correlationId, String traceId) {
+            String correlationId, String traceId, String spanId) {
 
         OutboxEvent event = new OutboxEvent();
         event.eventId = eventId;
@@ -98,6 +102,7 @@ public class OutboxEvent extends BaseEntity<Long> {
         event.occurredAt = occurredAt;
         event.correlationId = correlationId;
         event.traceId = traceId;
+        event.spanId = spanId;
         event.attempts = 0;
         return event;
     }
@@ -173,5 +178,9 @@ public class OutboxEvent extends BaseEntity<Long> {
 
     public String getTraceId() {
         return traceId;
+    }
+
+    public String getSpanId() {
+        return spanId;
     }
 }

@@ -89,6 +89,53 @@ export SERVICE_HOSTNAME="${SERVICE_HOSTNAME:-host.docker.internal}"
 export LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs}"
 mkdir -p "${LOG_DIR}"
 
+# ---------------------------------------------------------------------------
+# Tracing.
+#
+# The OpenTelemetry Java agent instruments the application from outside it:
+# Spring MVC, JDBC (PostgreSQL and Oracle alike), the Kafka producer and
+# consumer, Lettuce, Feign and MinIO's HTTP client all become spans without a
+# line of application code. That breadth is the reason for an agent rather than
+# a library - JDBC and the object-storage client in particular have no
+# Spring-native instrumentation to switch on.
+#
+# Set OTEL_SDK_DISABLED=true to run without it.
+# ---------------------------------------------------------------------------
+JAVA_AGENT_OPTS=()
+if [ "${OTEL_SDK_DISABLED:-false}" != "true" ]; then
+  AGENT_JAR="$("${SCRIPT_DIR}/otel-agent.sh")"
+  JAVA_AGENT_OPTS=(-javaagent:"${AGENT_JAR}")
+
+  # Identity. Matches the service/environment/version on every log line and
+  # metric, so all three signals are filterable by the same vocabulary.
+  export OTEL_SERVICE_NAME="${SERVICE}"
+  export OTEL_RESOURCE_ATTRIBUTES="service.name=${SERVICE},service.namespace=observability-lab,deployment.environment=${OTEL_ENVIRONMENT:-local}"
+
+  # Everything goes to the collector, which fans out to Tempo, Jaeger and
+  # Zipkin. Pointing the application at one endpoint rather than three is the
+  # entire argument for running a collector.
+  export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://${HOST}:${OTLP_GRPC_PORT:-4317}}"
+  export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}"
+
+  # Traces only. The agent can also export metrics and logs, but Prometheus
+  # already scrapes the former and the file pipeline already carries the
+  # latter; turning both on would double-count every signal.
+  export OTEL_TRACES_EXPORTER="${OTEL_TRACES_EXPORTER:-otlp}"
+  export OTEL_METRICS_EXPORTER="${OTEL_METRICS_EXPORTER:-none}"
+  export OTEL_LOGS_EXPORTER="${OTEL_LOGS_EXPORTER:-none}"
+
+  # Sample everything. Correct for a lab, and wrong for production: at real
+  # volume this is where a sampling strategy goes instead.
+  export OTEL_TRACES_SAMPLER="${OTEL_TRACES_SAMPLER:-parentbased_always_on}"
+
+  # Puts trace_id and span_id into the MDC, which is what makes a log line
+  # clickable through to its trace. The key names match this platform's log
+  # schema, so no translation is needed.
+  export OTEL_INSTRUMENTATION_LOGBACK_MDC_ENABLED=true
+  export OTEL_INSTRUMENTATION_COMMON_MDC_TRACE_ID_KEY=trace_id
+  export OTEL_INSTRUMENTATION_COMMON_MDC_SPAN_ID_KEY=span_id
+fi
+
 JAR="$(find "${REPO_ROOT}/services/${SERVICE}/target" -maxdepth 1 -name "${SERVICE}-*.jar" \
         ! -name '*.original' 2>/dev/null | head -1)"
 if [ -z "${JAR}" ]; then
@@ -105,10 +152,15 @@ echo "  minio     ${MINIO_ENDPOINT} (bucket ${MINIO_INVOICE_BUCKET})"
 echo "  issuer    ${KEYCLOAK_ISSUER}"
 echo "  registers as ${SERVICE_HOSTNAME}"
 echo "  json logs ${LOG_DIR}/${SERVICE}.json"
+if [ "${OTEL_SDK_DISABLED:-false}" != "true" ]; then
+  echo "  traces    ${OTEL_EXPORTER_OTLP_ENDPOINT} (otlp/${OTEL_EXPORTER_OTLP_PROTOCOL})"
+else
+  echo "  traces    disabled (OTEL_SDK_DISABLED=true)"
+fi
 echo
 
 # java_bin resolves java or java.exe; the bare path does not exist on Windows.
 JAVA="$(java_bin)"
 [ -n "${JAVA}" ] || { echo "ERROR: no java launcher under ${JAVA_HOME}" >&2; exit 1; }
 
-exec "${JAVA}" -jar "${JAR}" "$@"
+exec "${JAVA}" "${JAVA_AGENT_OPTS[@]}" -jar "${JAR}" "$@"

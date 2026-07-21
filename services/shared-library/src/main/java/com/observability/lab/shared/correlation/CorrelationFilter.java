@@ -1,6 +1,8 @@
 package com.observability.lab.shared.correlation;
 
 import com.observability.lab.shared.tracing.TraceParent;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -61,12 +63,30 @@ public class CorrelationFilter extends OncePerRequestFilter {
             requestId = CorrelationContext.newId();
         }
 
-        // A valid traceparent means the caller is already inside a trace and this request continues
-        // it. Its parent span id becomes this request's parent, until a tracing SDK takes over.
-        TraceParent traceParent =
-                TraceParent.parse(request.getHeader(CorrelationHeaders.TRACEPARENT)).orElse(null);
-        String traceId = traceParent == null ? null : traceParent.traceId();
-        String spanId = traceParent == null ? null : traceParent.parentId();
+        // Trace identity, from the most authoritative source available.
+        //
+        // When the OpenTelemetry agent is attached it has already started a real server span by the
+        // time this filter runs, and *that* is the truth: it reflects the span this request actually
+        // is, not the caller's parent. Reading the header instead would put the caller's span id on
+        // every log line and quietly break the link between a log and its trace.
+        //
+        // Without the agent there is no span context, and the inbound traceparent is the best
+        // available answer - which keeps the log schema populated in a plain `java -jar` run.
+        String traceId = null;
+        String spanId = null;
+
+        SpanContext current = Span.current().getSpanContext();
+        if (current.isValid()) {
+            traceId = current.getTraceId();
+            spanId = current.getSpanId();
+        } else {
+            TraceParent traceParent =
+                    TraceParent.parse(request.getHeader(CorrelationHeaders.TRACEPARENT)).orElse(null);
+            if (traceParent != null) {
+                traceId = traceParent.traceId();
+                spanId = traceParent.parentId();
+            }
+        }
 
         // Correlation survives across requests, so a caller-supplied value always wins. Falling back
         // to the trace id keeps a business transaction and its trace addressable by one identifier.

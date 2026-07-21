@@ -86,6 +86,18 @@
         </dependency>
 
         <!--
+            The OpenTelemetry API only - never the SDK, and never the agent.
+            Application code uses this to add attributes, events and links to
+            whatever span the agent has already started. Depending on the SDK
+            here would put a second, uninitialised TracerProvider on the
+            classpath and the manual spans would quietly go nowhere.
+        -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+
+        <!--
             JSON log encoding. Not optional, unlike the starters above: this module
             ships logback-common.xml, and a service including that file must have the
             encoder on its classpath or Logback fails to start. The MDC field names it

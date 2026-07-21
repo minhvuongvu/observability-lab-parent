@@ -61,7 +61,8 @@ public class OutboxOrderEventPublisher {
                 // the event it cannot be recovered at all — and the Inventory Service's logs end
                 // up under a different identifier than the request that caused them.
                 CorrelationContext.correlationId(),
-                CorrelationContext.traceId()));
+                CorrelationContext.traceId(),
+                CorrelationContext.spanId()));
 
         log.debug("Enqueued {} for order '{}' in the outbox", EVENT_TYPE, event.orderNumber());
     }

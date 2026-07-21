@@ -27,6 +27,10 @@ is not part of this stack yet.
 | Fluent Bit | `fluent/fluent-bit:4.2.7` | — | Log shipper, pipeline 2 |
 | Prometheus | `prom/prometheus:v3.7.3` | 9090 | Scrapes metrics, evaluates rules, remote-writes to VictoriaMetrics |
 | VictoriaMetrics | `victoriametrics/victoria-metrics:v1.111.0` | 8428 | Long-term metric store, answers the same PromQL |
+| OTel Collector | `otel/opentelemetry-collector-contrib:0.140.1` | 4317 / 4318 | Receives OTLP, fans out to all three trace stores |
+| Tempo | `grafana/tempo:2.9.1` | 3200 | Trace store Grafana links to; derives service-graph metrics |
+| Jaeger | `jaegertracing/all-in-one:1.66.0` | 16686 | Trace UI, in-memory storage |
+| Zipkin | `openzipkin/zipkin:3.6.1` | 9411 | Trace UI, its own wire format |
 | Grafana | `grafana/grafana:12.2.10` | 3000 | Dashboards; datasources provisioned from files |
 
 Three further containers run once and exit: `kafka-init` declares the topics, `minio-init` creates

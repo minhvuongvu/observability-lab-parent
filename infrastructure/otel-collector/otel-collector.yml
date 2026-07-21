@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# OpenTelemetry Collector.
+#
+# The reason it exists here: the services export to *one* endpoint, and the
+# collector decides where telemetry actually goes. Without it, sending the same
+# traces to Tempo, Jaeger and Zipkin would mean three exporters configured in
+# every service, three sets of credentials, and a redeploy of the application
+# to change a backend. With it, that is a change to this file.
+#
+# It also absorbs the difference in wire formats: the services speak OTLP and
+# nothing else, while Zipkin wants its own JSON. Translation belongs out here,
+# not in the application.
+# ---------------------------------------------------------------------------
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        # Bounded so one enormous batch cannot exhaust the collector's heap.
+        max_recv_msg_size_mib: 8
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batching is not optional at any real volume: it turns one export per span
+  # into one export per batch, which is the difference between a collector that
+  # keeps up and one that becomes the bottleneck it was meant to remove.
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  # A hard ceiling with back-pressure. Without this the collector answers a
+  # traffic spike by growing until the container is OOM-killed, losing the
+  # buffered telemetry with it - so a spike in traffic becomes a gap in exactly
+  # the data needed to explain the spike.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+
+  # Attributes every span carries regardless of which service produced it.
+  resource:
+    attributes:
+      - key: collector.name
+        value: lab-otel-collector
+        action: insert
+
+exporters:
+  # --- Tempo: the one Grafana links to from logs and metrics ----------------
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true    # Loopback-bound lab; a real deployment terminates TLS here.
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+
+  # --- Jaeger: speaks OTLP natively since v1.35, so no translation needed ---
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+
+  # --- Zipkin: its own JSON format, converted here ---------------------------
+  zipkin:
+    endpoint: http://zipkin:9411/api/v2/spans
+    # Zipkin's model has no notion of span kind the way OTLP does; the exporter
+    # maps it onto Zipkin's own kind field, which is why some attributes look
+    # different in Zipkin than in Tempo for the same span. That difference is
+    # worth seeing rather than hiding.
+    format: json
+
+  # Prometheus scrapes the collector's own metrics from here, so the pipeline
+  # that carries the telemetry is itself observable.
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  # Live inspection of pipeline configuration, useful when a span does not
+  # arrive where it was expected.
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      # Scraped by Prometheus. A dropped-spans counter here is the first place
+      # to look when a trace is incomplete.
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    # One receiver, three exporters. This fan-out is the whole point: the same
+    # spans land in Tempo, Jaeger and Zipkin, so the three can be compared on
+    # identical input rather than on their documentation.
+    traces:
+      receivers: [otlp]
+      # Order matters: memory_limiter first so it can reject before anything
+      # downstream has allocated for the batch.
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/tempo, otlp/jaeger, zipkin]

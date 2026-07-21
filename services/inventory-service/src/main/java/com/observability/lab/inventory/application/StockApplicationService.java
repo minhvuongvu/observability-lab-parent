@@ -5,6 +5,7 @@ import com.observability.lab.inventory.domain.StockLevel;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
 import com.observability.lab.shared.logging.LogContext;
+import com.observability.lab.shared.tracing.Spans;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -157,7 +158,19 @@ public class StockApplicationService {
             List<ReservationLine> lines) {
 
         var sample = metrics.start();
+        Spans.attribute(Spans.ORDER_NUMBER, orderNumber);
+        Spans.attribute(Spans.EVENT_ID, eventId);
+
         ReservationResult result = decide(eventId, orderNumber, lines);
+
+        Spans.attribute(Spans.OUTCOME, result.outcome().name().toLowerCase(java.util.Locale.ROOT));
+        if (result.outcome() == ReservationResult.Outcome.REJECTED) {
+            // An event carrying why, not an error status: refusing to promise units that do not
+            // exist is this service working, and it must not appear in the error rate.
+            Spans.event("stock.reservation.rejected", io.opentelemetry.api.common.Attributes.of(
+                    io.opentelemetry.api.common.AttributeKey.stringKey("shortages"),
+                    String.join(", ", result.shortages())));
+        }
         // Recorded on every path, including the redelivery one. A timer that skips the cheap cases
         // reports a latency distribution that describes work the service is not actually doing.
         metrics.recordOutcome(sample, result);

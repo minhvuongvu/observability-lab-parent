@@ -356,10 +356,10 @@ by service and environment.
 | [docs/MinIO.md](docs/MinIO.md) | Object storage: the invoice bucket, least-privilege credentials, upload timing, object naming and signed URLs |
 | [docs/Logging.md](docs/Logging.md) | Structured JSON logs, the MDC lifecycle, the three shipping pipelines, Loki vs OpenSearch, label cardinality and the Grafana dashboard |
 | [docs/Metrics.md](docs/Metrics.md) | Micrometer instrument types, common tags and cardinality, histograms vs pre-computed percentiles, Prometheus and VictoriaMetrics, rules and dashboards |
+| [docs/Tracing.md](docs/Tracing.md) | The OpenTelemetry agent, the collector fan-out to Tempo/Jaeger/Zipkin, span attributes, events, status and links, and cross-signal correlation |
 
-Deployment, Observability, Tracing, Profiling, Gateway, Runbook, Troubleshooting, Performance and
-Security guides are produced by the steps that introduce each capability, and consolidated in
-step 16.
+Deployment, Observability, Profiling, Gateway, Runbook, Troubleshooting, Performance and Security
+guides are produced by the steps that introduce each capability, and consolidated in step 16.
 
 ---
 

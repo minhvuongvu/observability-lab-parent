@@ -285,6 +285,10 @@ services:
       # window. Anything older is a VictoriaMetrics query.
       - --storage.tsdb.retention.time=24h
       - --web.enable-lifecycle
+      # Tempo's metrics generator remote-writes the RED metrics and service
+      # graph it derives from spans. Without this receiver those writes are
+      # rejected and the service-graph panels stay empty.
+      - --web.enable-remote-write-receiver
     extra_hosts:
       # The services run on the host; this is how a container reaches them,
       # exactly as Consul does to health-check them.
@@ -345,7 +349,119 @@ services:
           memory: 512M
 
   # -------------------------------------------------------------------------
-  # Grafana - where the logs and metrics are actually read.
+  # OpenTelemetry Collector - one endpoint in, three trace stores out.
+  #
+  # The services export OTLP to here and nothing else. Changing where traces
+  # go is then a change to this container's config rather than a redeploy of
+  # every application.
+  # -------------------------------------------------------------------------
+  otel-collector:
+    image: ${OTEL_COLLECTOR_IMAGE}
+    container_name: lab-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/otel-collector.yml"]
+    depends_on:
+      tempo:
+        condition: service_started
+    ports:
+      # OTLP gRPC and HTTP, published so the host-run services can reach them.
+      - "${BIND_HOST}:${OTLP_GRPC_PORT}:4317"
+      - "${BIND_HOST}:${OTLP_HTTP_PORT}:4318"
+      # zpages, for inspecting the pipeline when a span does not arrive.
+      - "${BIND_HOST}:${OTEL_ZPAGES_PORT}:55679"
+    volumes:
+      - ../../infrastructure/otel-collector/otel-collector.yml:/etc/otel/otel-collector.yml:ro
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # -------------------------------------------------------------------------
+  # Tempo - the trace store Grafana links to from logs and metrics.
+  #
+  # Also generates RED metrics and a service graph from the spans passing
+  # through it and remote-writes them to Prometheus, which is how
+  # service-to-service metrics exist without either service producing them.
+  # -------------------------------------------------------------------------
+  tempo:
+    image: ${TEMPO_IMAGE}
+    container_name: lab-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    user: root
+    ports:
+      - "${BIND_HOST}:${TEMPO_PORT}:3200"
+    volumes:
+      - ../../infrastructure/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Jaeger - the same spans, a different UI and a different storage model.
+  #
+  # Speaks OTLP natively, so the collector needs no translation for it. Its
+  # trace-comparison and dependency-graph views are genuinely better than
+  # Tempo's; its storage is heavier. Running both is how that trade becomes
+  # visible rather than theoretical.
+  # -------------------------------------------------------------------------
+  jaeger:
+    image: ${JAEGER_IMAGE}
+    container_name: lab-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      # In-memory storage, capped. A restart loses the traces, which is the
+      # right trade for a lab and completely wrong for production - where this
+      # would be Cassandra, Elasticsearch or OpenSearch.
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: "20000"
+    ports:
+      - "${BIND_HOST}:${JAEGER_UI_PORT}:16686"
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Zipkin - the oldest of the three, and the one with its own wire format.
+  #
+  # Included because its model predates OpenTelemetry and differs from it: the
+  # collector converts OTLP into Zipkin JSON, and some attributes therefore
+  # look different here than in Tempo for the very same span. Seeing that is
+  # more instructive than reading about it.
+  # -------------------------------------------------------------------------
+  zipkin:
+    image: ${ZIPKIN_IMAGE}
+    container_name: lab-zipkin
+    restart: unless-stopped
+    environment:
+      STORAGE_TYPE: mem
+    ports:
+      - "${BIND_HOST}:${ZIPKIN_PORT}:9411"
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  # -------------------------------------------------------------------------
+  # Grafana - where the logs, metrics and traces are actually read.
   #
   # Datasources and dashboards are provisioned from files rather than clicked
   # in: a dashboard that exists only in someone's browser is not part of the
@@ -361,6 +477,8 @@ services:
         condition: service_healthy
       prometheus:
         condition: service_healthy
+      tempo:
+        condition: service_started
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -401,6 +519,8 @@ networks:
     driver: bridge
 
 volumes:
+  tempo-data:
+    name: lab-tempo-data
   prometheus-data:
     name: lab-prometheus-data
   victoriametrics-data:
