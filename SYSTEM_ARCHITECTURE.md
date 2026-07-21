@@ -304,7 +304,7 @@ steps.
 | Timeout | 2 s connect / 5 s read | **Deadline** 200–300 ms, propagated | `max.poll.interval.ms` |
 | Retry | None at Feign layer | 3 attempts, retryable statuses only | 3 attempts, 1 s backoff |
 | Backoff | — | Exponential + jitter | Fixed |
-| Circuit breaker | Planned | 50% errors **or** 80% slow calls | n/a |
+| Circuit breaker | Not applied | 50% errors **or** 80% slow calls, business statuses excluded | n/a |
 | Dead letter | n/a | n/a | `dead-letter-topic` |
 | Idempotency | Read-only | `event_id` | `processed_events` |
 | Fallback | Degraded answer | Degraded answer, or **fall through to Kafka** | Retry topic |

@@ -21,17 +21,26 @@ public record AvailabilityView(
         boolean sufficient,
         boolean known) {
 
-    static AvailabilityView of(String productSku, int requested, int available) {
+    /**
+     * Public because both transports build these, and the gRPC adapter lives outside this package.
+     *
+     * <p>Keeping the constructors here rather than letting each adapter assemble the record itself
+     * is what guarantees the two transports produce identical answers: {@code sufficient} is derived
+     * in one place, from one comparison, so REST and gRPC cannot disagree about what "enough" means.
+     */
+    public static AvailabilityView of(String productSku, int requested, int available) {
         return new AvailabilityView(productSku, requested, available, available >= requested, true);
     }
 
     /**
-     * A product inventory has never heard of.
+     * A product inventory has never heard of, or could not be asked about.
      *
      * <p>Reported rather than thrown: asking about a typo'd SKU is a question with an answer, and a
-     * caller checking five products should not lose the other four to an exception.
+     * caller checking five products should not lose the other four to an exception. It is also the
+     * degraded answer when the dependency is unreachable — "cannot tell" is honest, where a
+     * confident "out of stock" would not be.
      */
-    static AvailabilityView unknown(String productSku, int requested) {
+    public static AvailabilityView unknown(String productSku, int requested) {
         return new AvailabilityView(productSku, requested, 0, false, false);
     }
 }

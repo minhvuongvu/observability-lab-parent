@@ -106,11 +106,20 @@ public class OrderController {
             description = "Advisory only. Calls the Inventory Service synchronously — resolved "
                     + "through the Consul registry — and reports what is available right now. "
                     + "Nothing is reserved: the authoritative decision is made asynchronously after "
-                    + "the order is placed, so a 'sufficient' answer here can still be overtaken.")
+                    + "the order is placed, so a 'sufficient' answer here can still be overtaken."
+                    + "\n\n"
+                    + "The transport is selectable so the two can be compared against the same "
+                    + "provider and the same data. `grpc` is one round trip and one `IN` query for "
+                    + "the whole basket; `rest` is one HTTP request and one point lookup per line, "
+                    + "which is linear in basket size. Both answer identically — the difference is "
+                    + "entirely in what it costs to ask.")
     public ApiResponse<List<AvailabilityView>> availability(
+            @Parameter(description = "Which transport to ask over. Defaults to gRPC.")
+            @RequestParam(defaultValue = "GRPC") AvailabilityService.Transport transport,
+
             @Valid @RequestBody CreateOrderRequest request) {
 
-        return ApiResponse.success(availability.check(request.toCommand().items()));
+        return ApiResponse.success(availability.check(request.toCommand().items(), transport));
     }
 
     @GetMapping("/{orderNumber}/invoice")

@@ -140,7 +140,7 @@ The same pair of services talks both synchronously and asynchronously, on purpos
 | Pattern | Used for | Failure behaviour |
 | --- | --- | --- |
 | **REST (external)** | The public API: client → Nginx → Kong → service | Standard HTTP semantics; gateway applies rate limits and JWT policy |
-| **REST via Feign (internal)** | Retained for compatibility; the internal read path is migrating to gRPC | Timeout, bounded retry with backoff, circuit breaker; caller degrades to a cached or conservative answer |
+| **REST via Feign (internal)** | Retained, and still the honest one-request-per-SKU implementation, so the protocol comparison has two real sides | Timeout, no Feign-level retry, caller degrades to an "unknown" answer |
 | **gRPC** | Internal synchronous calls the caller must wait for: batch stock checks, express reservation, streaming | Deadline (200–300 ms), retry on retryable statuses only, circuit breaker on errors *and* slow calls, fallback to a degraded answer or to the Kafka path |
 | **Kafka events** | State changes other services react to: `order-created`, `inventory-updated` | Consumer retry topic with backoff, then a dead-letter topic; producer is unaffected by consumer failure |
 
@@ -347,15 +347,17 @@ This document describes the target. What is actually built and running:
 | **Metrics** | Micrometer → Prometheus → VictoriaMetrics; JVM, HTTP, pool, Kafka, Redis and business metrics; recording and alert rules |
 | **Tracing** | OpenTelemetry Java agent → Collector → Tempo, Jaeger and Zipkin; span links across the outbox |
 | **Profiling** | Pyroscope: CPU, allocation, live heap and lock contention, linked from traces |
-| **Dashboards** | Ten Grafana dashboards, generated from one source, every query verified against live data |
+| **Dashboards** | Eleven Grafana dashboards, generated from one source, every query verified against live data |
+| **gRPC** | `inventory.v1.InventoryService` on port 9082: unary, server-streaming and client-streaming RPCs, generated from one `.proto` into both sides. Deadlines, status mapping, retries with a budget, a circuit breaker, and client-side balancing through Consul |
+| **Circuit breakers** | Around the gRPC hop, tripping on slow calls as well as errors, with a defined fallback per call |
 
 Described above but not yet built:
 
 | Not yet | Status |
 | --- | --- |
 | **TLS at the edge.** Nginx serves plain HTTP. Every port binds to `127.0.0.1`, so TLS would encrypt a loopback hop while adding certificate handling that obscures gateway behaviour. A deployment reachable from elsewhere terminates TLS at Nginx. | Deliberate for a single-host lab |
-| **gRPC between services.** Designed in full — see [GRPC_ARCHITECTURE.md](../GRPC_ARCHITECTURE.md) and its companions — but not implemented. Sections 4 and 6 above describe the target including gRPC. | Step 15 |
-| **Circuit breakers.** Timeouts and retries exist; the breaker around the internal synchronous call arrives with gRPC. | Step 15 |
+| **mTLS between services.** The gRPC hop is plaintext, like every other hop here. A real deployment authenticates both ends, which is where a service mesh would take over. | Deliberate for a single-host lab |
+| **`buf lint` and `buf breaking` in CI.** ADR-17. The contract rules are enforced by review today; a wire-incompatible change is invisible to all four signals, so it needs a machine. | Step 17 |
 | **Failure-simulation endpoints.** Including the seven gRPC chaos scenarios. | Step 16 |
 | **Runbook and consolidated guides.** | Step 17 |
 

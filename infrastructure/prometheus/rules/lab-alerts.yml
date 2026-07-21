@@ -36,6 +36,26 @@ groups:
           histogram_quantile(0.99,
             sum by (service, le) (rate(http_server_requests_seconds_bucket[5m])))
 
+      # The gRPC hop, in the same shape as the HTTP one so the two are directly
+      # comparable rather than expressed in two different vocabularies.
+      - record: lab:grpc_request_rate:5m
+        expr: sum by (service, grpc_service) (rate(grpc_server_requests_total[5m]))
+
+      # Faults, NOT non-OK. NOT_FOUND for an untracked SKU and
+      # FAILED_PRECONDITION for a shortage are answers, and counting them here
+      # would make the error rate track catalogue quality instead of service
+      # health - producing an alert people learn to mute.
+      - record: lab:grpc_fault_rate:5m
+        expr: |
+          sum by (service, grpc_service) (rate(grpc_server_requests_total{
+            grpc_status=~"INTERNAL|UNKNOWN|DATA_LOSS|UNAVAILABLE"}[5m]))
+
+      - record: lab:grpc_latency_p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, grpc_method, le) (
+              rate(grpc_server_request_duration_seconds_bucket[5m])))
+
   # -------------------------------------------------------------------------
   # Alerts.
   # -------------------------------------------------------------------------
@@ -112,3 +132,69 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.service }} has threads waiting for a database connection"
+
+      # -----------------------------------------------------------------------
+      # The gRPC hop. Four alerts, and each one describes a failure that the
+      # HTTP alerts above cannot see.
+      # -----------------------------------------------------------------------
+
+      - alert: GrpcHighFaultRate
+        # A ratio, and one built only from genuine faults. clamp_min keeps a
+        # service with no traffic from dividing by zero and firing on nothing.
+        expr: |
+          lab:grpc_fault_rate:5m
+            / clamp_min(lab:grpc_request_rate:5m, 0.001) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.grpc_service }} is faulting on more than 1% of calls"
+
+      - alert: GrpcDeadlineExceededRising
+        # The caller gave up. Either this service got slower or the deadline is
+        # too tight - and the gap between the client and server duration panels
+        # is what says which.
+        expr: |
+          sum by (service, grpc_method) (rate(grpc_server_requests_total{
+            grpc_status="DEADLINE_EXCEEDED"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.grpc_method }} is exceeding its callers' deadlines"
+
+      - alert: GrpcExecutorSaturated
+        # The failure with no other symptom: calls are slow, CPU is low, heap is
+        # healthy and Tomcat's thread pool is empty - because the queue is in
+        # front of a pool nothing else measures. gRPC dispatches onto its own
+        # executor, and this is the only metric that shows it filling.
+        expr: |
+          executor_active_threads{name="grpc-executor"}
+            / clamp_min(executor_pool_max_threads{name="grpc-executor"}, 1) > 0.9
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }}'s gRPC handler pool is saturated"
+          description: "RPCs are queueing while every other saturation signal looks healthy."
+
+      - alert: GrpcChannelNotReady
+        # A client that cannot reach the provider at all, visible before any
+        # user notices. Also the first thing to check when the caller reports
+        # UNAVAILABLE while the callee's own dashboards are green.
+        expr: grpc_client_channel_state{state="TRANSIENT_FAILURE"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} cannot reach {{ $labels.target }} over gRPC"
+
+      - alert: GrpcCircuitBreakerOpen
+        # A breaker that opens silently is worse than none: the dependency stops
+        # being called and nothing says why.
+        expr: resilience4j_circuitbreaker_state{state="open"} == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} has opened the circuit to {{ $labels.name }}"

@@ -102,6 +102,17 @@ public class MetricsAutoConfiguration {
     private static boolean shouldHaveHistogram(String name) {
         return name.startsWith("http.server.requests")
                 || name.startsWith("http.client.requests")
+                // Both sides of the gRPC hop, and both are needed: the gap between them is network,
+                // queueing and connection establishment. A client p99 of 400ms against a server p99
+                // of 15ms is not a slow service, it is a saturated channel - and only having both
+                // numbers distinguishes them.
+                //
+                // There is a second reason here that HTTP does not have. The deadline is a hard
+                // boundary: an RPC either completes inside it or returns DEADLINE_EXCEEDED, so the
+                // fraction of calls landing in the bucket just below the deadline is how a timeout
+                // is seen coming before it starts firing.
+                || name.startsWith("grpc.server.request.duration")
+                || name.startsWith("grpc.client.request.duration")
                 || name.startsWith(MetricTags.NAMESPACE)
                 || name.startsWith("hikaricp.connections.acquire")
                 || name.startsWith("hikaricp.connections.usage")

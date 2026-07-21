@@ -142,6 +142,39 @@ public class StockLevel extends AuditableEntity<Long> {
     }
 
     /**
+     * A signed correction, as produced by a warehouse reconciliation.
+     *
+     * <p>{@link #adjust} only ever adds, which is right for an operator correcting an undercount and
+     * useless for a reconciliation: shrinkage, damage and miscounts all move the number downwards,
+     * and a reconciliation that can only increase stock is not one.
+     *
+     * <p>A shortfall is refused rather than clamped to zero. Clamping would quietly record a
+     * different correction from the one submitted, and the resulting movement trail would no longer
+     * explain the level it produced — which is the one thing the trail exists to do.
+     *
+     * @param delta signed change to the available quantity; zero is refused as a mistake
+     * @throws BusinessException when the correction would take available stock below zero
+     */
+    public void correct(int delta, String reference) {
+        if (delta == 0) {
+            throw new BusinessException(InventoryErrorCode.INVALID_QUANTITY,
+                    "A correction of zero changes nothing and is almost certainly a mistake.");
+        }
+        if (delta > 0) {
+            adjust(delta, reference);
+            return;
+        }
+        int removed = -delta;
+        if (availableQuantity < removed) {
+            throw new BusinessException(InventoryErrorCode.INVALID_QUANTITY,
+                    "Cannot remove " + removed + " of '" + productSku + "': only "
+                            + availableQuantity + " available.");
+        }
+        availableQuantity -= removed;
+        record(MovementType.ADJUSTMENT, removed, reference);
+    }
+
+    /**
      * Whether this product can stop being tracked.
      *
      * <p>Removing a product with outstanding reservations would strand orders that were promised

@@ -104,6 +104,16 @@ spring:
         instance-id: ${spring.application.name}:${server.port}
         tags:
           - observability-lab
+          # Advertises that this instance also serves gRPC. The Order Service's
+          # name resolver filters on it, so an instance that has not been
+          # upgraded yet is simply not offered as a gRPC target.
+          - grpc
+        metadata:
+          # The gRPC port, published alongside the HTTP one. Consul registers a
+          # single port per service, so the second one travels as metadata; the
+          # HTTP health check on /actuator/health stays authoritative for both,
+          # because a process that cannot serve HTTP cannot serve gRPC either.
+          grpc-port: "${app.grpc.server.port}"
         # A registry that is briefly down must not stop the service from
         # starting; it registers as soon as Consul returns.
         fail-fast: false
@@ -196,6 +206,39 @@ app:
     # Shorter than the Order Service's: stock changes far more often than an
     # order does, and a stale availability figure is the one that oversells.
     stock-ttl: 2m
+
+  grpc:
+    server:
+      # 90xx mirrors the 80xx HTTP port, so the pairing is obvious at a glance.
+      port: ${GRPC_PORT:9082}
+      # Loopback by default. gRPC here is service-to-service and is deliberately
+      # NOT routed through Kong: the gateway's plugin stack is HTTP-native, and
+      # exposing an internal contract at the edge is how it stops being internal.
+      #
+      # ./scripts/run-service.sh widens this to 0.0.0.0, because the instance
+      # registers a LAN address in Consul and the Order Service connects to what
+      # the registry hands it. Binding loopback while advertising a routable
+      # address registers an endpoint nothing can reach. That widening is why
+      # the port authenticates as well (below): the network is not the control.
+      bind-address: ${GRPC_BIND_ADDRESS:127.0.0.1}
+      # gRPC dispatches onto its own executor, separate from Tomcat's. The queue
+      # is bounded so overload surfaces as RESOURCE_EXHAUSTED - retryable, and
+      # visible - rather than as unbounded latency and eventually a heap dump.
+      executor-threads: 16
+      executor-queue-capacity: 256
+      shutdown-grace: 20s
+      # The default. A batch of 100 SKUs is kilobytes; a larger ceiling is a
+      # memory-exhaustion vector, not a feature.
+      max-inbound-message-size: 4194304
+      # Serves the schema to grpcurl without a copy of the .proto. Overridden to
+      # false under prod in application-prod.yml: reflection publishes the full
+      # service schema to anyone who can reach the port.
+      reflection-enabled: true
+      authentication:
+        # The same JwtDecoder the HTTP resource server uses, applied to the gRPC
+        # port. The port is on loopback, which is a real control - and exactly
+        # the kind that stops being true the first time this is containerised.
+        enabled: true
 
 # Surfaced at /actuator/info (management.info.env.enabled below). The default
 # names this file; a value seeded into Consul KV (config/application/data)

@@ -24,15 +24,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
  */
 public class CorrelationFilter extends OncePerRequestFilter {
 
-    /**
-     * Longest caller-supplied identifier accepted.
-     *
-     * <p>Every identifier is copied onto every log line for the request. An unbounded value from an
-     * untrusted caller is therefore an amplification primitive: one request, megabytes of log
-     * volume, multiplied across the pipeline.
-     */
-    private static final int MAX_ID_LENGTH = 128;
-
     private final ServiceIdentity identity;
 
     public CorrelationFilter(ServiceIdentity identity) {
@@ -104,33 +95,12 @@ public class CorrelationFilter extends OncePerRequestFilter {
         CorrelationContext.put(CorrelationFields.SERVICE, identity.name());
         CorrelationContext.put(CorrelationFields.ENVIRONMENT, identity.environment());
         CorrelationContext.put(CorrelationFields.VERSION, identity.version());
+
+        CorrelationContext.put(CorrelationFields.PROTOCOL, "http");
     }
 
-    /**
-     * Accepts a caller-supplied identifier only if it is safe to write into a log line.
-     *
-     * <p>Rejects anything oversized or containing a character outside {@code [A-Za-z0-9._-]}. The
-     * character restriction is not cosmetic: a newline in a header value lets a caller forge log
-     * entries, and in a JSON pipeline a quote or brace can break the record the parser is building.
-     *
-     * @return the accepted value, or {@code null} to mean "generate a fresh one instead"
-     */
+    /** @see CorrelationContext#sanitise(String) — shared with the gRPC metadata path. */
     private static String sanitise(String value) {
-        if (value == null) {
-            return null;
-        }
-        String trimmed = value.trim();
-        if (trimmed.isEmpty() || trimmed.length() > MAX_ID_LENGTH) {
-            return null;
-        }
-        for (int i = 0; i < trimmed.length(); i++) {
-            char c = trimmed.charAt(i);
-            boolean safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                    || c == '-' || c == '_' || c == '.';
-            if (!safe) {
-                return null;
-            }
-        }
-        return trimmed;
+        return CorrelationContext.sanitise(value);
     }
 }

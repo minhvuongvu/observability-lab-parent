@@ -27,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.cache.CacheManager;
+import org.springframework.context.ApplicationEventPublisher;
 
 @ExtendWith(MockitoExtension.class)
 // The cache manager is consulted only on the paths that change several SKUs at once, so it is
@@ -47,12 +48,15 @@ class StockApplicationServiceTest {
     @Mock
     private CacheManager cacheManager;
 
+    @Mock
+    private ApplicationEventPublisher events;
+
     private StockApplicationService service;
 
     @BeforeEach
     void setUp() {
         service = new StockApplicationService(stockLevels, processedEvents, cacheManager,
-                new StockMetrics(new SimpleMeterRegistry()));
+                new StockMetrics(new SimpleMeterRegistry()), events);
         when(stockLevels.save(any(StockLevel.class))).thenAnswer(call -> call.getArgument(0));
     }
 

@@ -1,0 +1,183 @@
+// ---------------------------------------------------------------------------
+// The Inventory Service contract.
+//
+// This file is the API, not a serialisation detail. It is compiled into both
+// sides of the hop, and once a consumer exists it cannot be changed freely:
+// field numbers are permanent, enum values are append-only, and anything that
+// is not additive becomes inventory/v2 rather than an edit here.
+//
+// Owned by the Inventory Service. See GRPC_PROTO_DESIGN.md for the versioning
+// and evolution rules that govern it.
+// ---------------------------------------------------------------------------
+syntax = "proto3";
+
+package inventory.v1;
+
+option java_package = "com.observability.lab.inventory.grpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "InventoryServiceProto";
+
+import "google/protobuf/timestamp.proto";
+
+// Stock availability and reservation.
+//
+// Authoritative reservation happens asynchronously over Kafka (`order-created`).
+// The unary RPCs here are for the synchronous path: advisory checks that a caller
+// must have before it can render a page, and an express reservation that races
+// the asynchronous flow under a short deadline.
+service InventoryService {
+
+  // Availability for one product. Advisory: reserves nothing.
+  rpc CheckStock(CheckStockRequest) returns (CheckStockResponse);
+
+  // Availability for many products in one round trip.
+  //
+  // This is the reason the service exists in gRPC form: the REST equivalent
+  // costs one HTTP request per SKU, which is linear in basket size on the
+  // checkout path.
+  rpc BatchCheckStock(BatchCheckStockRequest) returns (BatchCheckStockResponse);
+
+  // Reserve stock synchronously. Complements, never replaces, the Kafka path.
+  //
+  // Idempotent on event_id: the same event_id always yields the same outcome,
+  // whether it arrives here or over Kafka.
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+
+  // Live stock levels for a watchlist. Server streams on change.
+  rpc WatchStockLevels(WatchStockLevelsRequest) returns (stream StockUpdate);
+
+  // Bulk adjustments, e.g. nightly warehouse reconciliation.
+  // Client streams; the server applies in batches and answers once.
+  rpc BulkAdjustStock(stream StockAdjustment) returns (BulkAdjustStockSummary);
+}
+
+// ---------------------------------------------------------------------------
+// CheckStock
+// ---------------------------------------------------------------------------
+
+message CheckStockRequest {
+  // Product identifier. Required; empty yields INVALID_ARGUMENT.
+  string product_sku = 1;
+
+  // How many the caller is considering. Optional; when 0 the response reports
+  // availability without a sufficiency verdict.
+  int32 requested_quantity = 2;
+}
+
+message CheckStockResponse {
+  string product_sku = 1;
+  int32 available_quantity = 2;
+  int32 reserved_quantity = 3;
+
+  // Whether requested_quantity could be satisfied at the moment of the call.
+  // Advisory: another caller may reserve the same units microseconds later.
+  bool sufficient = 4;
+
+  // False when inventory does not track this SKU at all. Distinguished from
+  // available_quantity == 0, which means "tracked, and none left".
+  bool tracked = 5;
+
+  // When this figure was read. Lets a caller reason about staleness rather
+  // than assuming the answer is current.
+  google.protobuf.Timestamp as_of = 6;
+}
+
+// ---------------------------------------------------------------------------
+// BatchCheckStock
+// ---------------------------------------------------------------------------
+
+message BatchCheckStockRequest {
+  // Bounded server-side. More than 100 yields INVALID_ARGUMENT rather than a
+  // slow success — an unbounded batch is a denial-of-service primitive.
+  repeated CheckStockRequest items = 1;
+}
+
+message BatchCheckStockResponse {
+  // One result per requested item, in request order. A SKU that is not tracked
+  // appears with tracked = false rather than being omitted, so the caller can
+  // zip the lists positionally.
+  repeated CheckStockResponse results = 1;
+}
+
+// ---------------------------------------------------------------------------
+// ReserveStock
+// ---------------------------------------------------------------------------
+
+message ReserveStockRequest {
+  // Idempotency key. The same event_id is used by the Kafka path, which is what
+  // makes the two paths safe to race.
+  string event_id = 1;
+
+  string order_number = 2;
+
+  repeated ReservationLine lines = 3;
+}
+
+message ReservationLine {
+  string product_sku = 1;
+  int32 quantity = 2;
+}
+
+message ReserveStockResponse {
+  ReservationOutcome outcome = 1;
+
+  // Human-readable shortages, populated only when outcome is REJECTED.
+  repeated string shortages = 2;
+
+  // True when this event_id had already been applied and the outcome is a
+  // replay rather than a new decision.
+  bool replayed = 3;
+}
+
+enum ReservationOutcome {
+  // Every proto3 enum must have a zero value, and it must mean "unspecified".
+  // A caller that receives this is talking to a newer server that returned a
+  // value it does not know.
+  RESERVATION_OUTCOME_UNSPECIFIED = 0;
+  RESERVATION_OUTCOME_RESERVED = 1;
+  RESERVATION_OUTCOME_REJECTED = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+message WatchStockLevelsRequest {
+  repeated string product_skus = 1;
+
+  // Send the current level for each SKU immediately on subscribe, before any
+  // change events. Without this a client cannot distinguish "no change yet"
+  // from "not subscribed".
+  bool send_initial_state = 2;
+}
+
+message StockUpdate {
+  string product_sku = 1;
+  int32 available_quantity = 2;
+  int32 reserved_quantity = 3;
+  google.protobuf.Timestamp occurred_at = 4;
+  StockChangeReason reason = 5;
+}
+
+enum StockChangeReason {
+  STOCK_CHANGE_REASON_UNSPECIFIED = 0;
+  STOCK_CHANGE_REASON_INITIAL_STATE = 1;
+  STOCK_CHANGE_REASON_RESERVED = 2;
+  STOCK_CHANGE_REASON_RELEASED = 3;
+  STOCK_CHANGE_REASON_RECEIVED = 4;
+  STOCK_CHANGE_REASON_ADJUSTED = 5;
+}
+
+message StockAdjustment {
+  string product_sku = 1;
+  int32 quantity_delta = 2;
+  string reference = 3;
+  google.protobuf.Timestamp occurred_at = 4;
+}
+
+message BulkAdjustStockSummary {
+  int32 applied = 1;
+  int32 rejected = 2;
+  repeated string rejection_reasons = 3;
+  int64 duration_ms = 4;
+}

@@ -3,3 +3,4 @@ com.observability.lab.shared.autoconfigure.ExceptionHandlingAutoConfiguration
 com.observability.lab.shared.autoconfigure.PersistenceAutoConfiguration
 com.observability.lab.shared.autoconfigure.ResourceServerAutoConfiguration
 com.observability.lab.shared.autoconfigure.MetricsAutoConfiguration
+com.observability.lab.shared.autoconfigure.GrpcAutoConfiguration

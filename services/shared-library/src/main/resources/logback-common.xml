@@ -79,6 +79,17 @@
                     <includeMdcKeyName>service</includeMdcKeyName>
                     <includeMdcKeyName>environment</includeMdcKeyName>
                     <includeMdcKeyName>version</includeMdcKeyName>
+                    <includeMdcKeyName>protocol</includeMdcKeyName>
+
+                    <!-- gRPC call identity. Present only on a gRPC call, and on
+                         *every* line it produces rather than only on the
+                         interceptor's own - which is what lets an application
+                         log line be filtered by method and by caller. -->
+                    <includeMdcKeyName>grpc_service</includeMdcKeyName>
+                    <includeMdcKeyName>grpc_method</includeMdcKeyName>
+                    <includeMdcKeyName>grpc_type</includeMdcKeyName>
+                    <includeMdcKeyName>caller_service</includeMdcKeyName>
+                    <includeMdcKeyName>peer_address</includeMdcKeyName>
                 </mdc>
 
                 <!--
@@ -158,6 +169,17 @@
                     <includeMdcKeyName>service</includeMdcKeyName>
                     <includeMdcKeyName>environment</includeMdcKeyName>
                     <includeMdcKeyName>version</includeMdcKeyName>
+                    <includeMdcKeyName>protocol</includeMdcKeyName>
+
+                    <!-- gRPC call identity. Present only on a gRPC call, and on
+                         *every* line it produces rather than only on the
+                         interceptor's own - which is what lets an application
+                         log line be filtered by method and by caller. -->
+                    <includeMdcKeyName>grpc_service</includeMdcKeyName>
+                    <includeMdcKeyName>grpc_method</includeMdcKeyName>
+                    <includeMdcKeyName>grpc_type</includeMdcKeyName>
+                    <includeMdcKeyName>caller_service</includeMdcKeyName>
+                    <includeMdcKeyName>peer_address</includeMdcKeyName>
                 </mdc>
                 <arguments/>
                 <stackTrace>

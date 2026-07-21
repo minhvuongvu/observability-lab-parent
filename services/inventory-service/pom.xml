@@ -112,6 +112,35 @@
             <artifactId>spring-cloud-starter-consul-config</artifactId>
         </dependency>
 
+        <!--
+            gRPC server. This service is the provider: it owns proto/inventory
+            and serves inventory.v1.InventoryService on its own port, alongside
+            - never instead of - the REST API Kong routes to.
+
+            grpc-netty-shaded rather than grpc-netty: the shaded build carries
+            its own Netty and BoringSSL, so gRPC's transport cannot be dragged
+            onto whichever Netty version some other dependency happens to want.
+        -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+        </dependency>
+        <!-- grpc.health.v1.Health and server reflection: the health service so
+             gRPC-native clients get the same answer as /actuator/health, and
+             reflection so grpcurl works without a copy of the .proto. -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-services</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -120,6 +149,14 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- In-process transport: exercises the real server, the real
+             interceptors and the real generated stubs without binding a port,
+             so the gRPC tests stay as fast and as isolated as the MockMvc ones. -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-inprocess</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -132,6 +169,13 @@
                 <configuration>
                     <mainClass>com.observability.lab.inventory.InventoryServiceApplication</mainClass>
                 </configuration>
+            </plugin>
+
+            <!-- Generates the server base class from proto/inventory/v1.
+                 Fully configured in the parent POM. -->
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

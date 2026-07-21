@@ -6,6 +6,7 @@ import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
 import com.observability.lab.shared.logging.LogContext;
 import com.observability.lab.shared.tracing.Spans;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -49,14 +50,16 @@ public class StockApplicationService {
     private final ProcessedEventRepository processedEvents;
     private final CacheManager cacheManager;
     private final StockMetrics metrics;
+    private final org.springframework.context.ApplicationEventPublisher events;
 
     public StockApplicationService(StockLevelRepository stockLevels,
             ProcessedEventRepository processedEvents, CacheManager cacheManager,
-            StockMetrics metrics) {
+            StockMetrics metrics, org.springframework.context.ApplicationEventPublisher events) {
         this.stockLevels = stockLevels;
         this.processedEvents = processedEvents;
         this.cacheManager = cacheManager;
         this.metrics = metrics;
+        this.events = events;
     }
 
     // --- CRUD ---------------------------------------------------------------
@@ -94,12 +97,41 @@ public class StockApplicationService {
         return stockLevels.findAll(pageable).map(StockLevelView::from);
     }
 
+    /**
+     * Availability for many products in one query.
+     *
+     * <p>The whole reason the gRPC contract exists. Answering the same question over REST costs one
+     * request, one round trip and one point lookup <em>per SKU</em>, which is linear in basket size
+     * on the checkout path; this is one {@code IN} predicate regardless.
+     *
+     * <p>A SKU the service does not track is returned with {@code tracked = false} rather than
+     * omitted, so the caller can zip the answers against its request positionally instead of
+     * rebuilding the association from the SKUs.
+     */
+    @Transactional(readOnly = true)
+    public List<StockAvailability> availabilityFor(List<String> productSkus) {
+        Instant asOf = Instant.now();
+
+        Map<String, StockLevel> tracked = new LinkedHashMap<>();
+        stockLevels.findAllByProductSkuIn(productSkus)
+                .forEach(stock -> tracked.put(stock.getProductSku(), stock));
+
+        return productSkus.stream()
+                .map(sku -> {
+                    StockLevel stock = tracked.get(sku);
+                    return stock == null
+                            ? StockAvailability.untracked(sku, asOf)
+                            : StockAvailability.tracked(stock, asOf);
+                })
+                .toList();
+    }
+
     /** Records an arrival of units. */
     @CacheEvict(cacheNames = STOCK_CACHE, key = "#productSku")
     public StockLevelView receive(String productSku, int quantity, String reference) {
         StockLevel stock = require(productSku);
         stock.receive(quantity, reference);
-        return StockLevelView.from(stockLevels.save(stock));
+        return saveAndAnnounce(stock, StockChangedEvent.Reason.RECEIVED);
     }
 
     /** Undoes a reservation, normally because an order was cancelled. */
@@ -107,7 +139,7 @@ public class StockApplicationService {
     public StockLevelView release(String productSku, int quantity, String reference) {
         StockLevel stock = require(productSku);
         stock.release(quantity, reference);
-        return StockLevelView.from(stockLevels.save(stock));
+        return saveAndAnnounce(stock, StockChangedEvent.Reason.RELEASED);
     }
 
     /** Applies an operator correction, for example after a physical count. */
@@ -115,7 +147,50 @@ public class StockApplicationService {
     public StockLevelView adjust(String productSku, int quantity, String reference) {
         StockLevel stock = require(productSku);
         stock.adjust(quantity, reference);
-        return StockLevelView.from(stockLevels.save(stock));
+        return saveAndAnnounce(stock, StockChangedEvent.Reason.ADJUSTED);
+    }
+
+    /**
+     * Applies one batch of a bulk reconciliation.
+     *
+     * <p>A batch, not the whole job. The caller streams thousands of adjustments and flushes every
+     * few hundred; one transaction per flush keeps the row locks short and bounds how much is lost
+     * if the stream dies halfway. One transaction for the entire job would hold locks for its whole
+     * duration and roll back ten thousand good corrections because the last one named a SKU that
+     * does not exist.
+     *
+     * <p>Each line succeeds or fails on its own for the same reason. A reconciliation is a list of
+     * independent facts about independent products; all-or-nothing is right for an <em>order</em>,
+     * where a half-promised basket is meaningless, and wrong here.
+     */
+    public BulkAdjustmentResult applyAdjustments(List<StockAdjustment> adjustments) {
+        int applied = 0;
+        List<String> rejections = new ArrayList<>();
+        List<StockChangedEvent> announcements = new ArrayList<>();
+
+        for (StockAdjustment adjustment : adjustments) {
+            StockLevel stock = stockLevels.findByProductSku(adjustment.productSku()).orElse(null);
+            if (stock == null) {
+                rejections.add(adjustment.productSku() + " (not tracked)");
+                continue;
+            }
+            try {
+                stock.correct(adjustment.quantityDelta(), adjustment.reference());
+            } catch (BusinessException refused) {
+                // A refusal is data about the warehouse count, not a failure of this call. It is
+                // reported in the summary so the operator can reconcile the reconciliation.
+                rejections.add(adjustment.productSku() + " (" + refused.getMessage() + ")");
+                continue;
+            }
+            stockLevels.save(stock);
+            announcements.add(StockChangedEvent.of(stock, StockChangedEvent.Reason.ADJUSTED));
+            applied++;
+        }
+
+        evictCached(announcements.stream().map(StockChangedEvent::productSku).toList());
+        announcements.forEach(events::publishEvent);
+
+        return new BulkAdjustmentResult(applied, rejections);
     }
 
     /** Stops tracking a product. Refused while units are still promised to orders. */
@@ -219,6 +294,10 @@ public class StockApplicationService {
                         ReservationResult.Outcome.RESERVED, null));
 
         evictCached(tracked.keySet());
+        lines.stream()
+                .map(line -> tracked.get(line.productSku()))
+                .forEach(stock -> events.publishEvent(
+                        StockChangedEvent.of(stock, StockChangedEvent.Reason.RESERVED)));
 
         try (var scope = LogContext.with("order_number", orderNumber)) {
             log.info("Reserved {} line(s) for order '{}'", lines.size(), orderNumber);
@@ -290,6 +369,19 @@ public class StockApplicationService {
                 keys.forEach(cache::evict);
             }
         });
+    }
+
+    /**
+     * Persists a change and announces it to whoever is subscribed.
+     *
+     * <p>The event is raised in-process rather than published from each caller, so no path can
+     * change a level and forget to announce it — which for a live subscription means a client that
+     * silently stops seeing updates while still appearing connected.
+     */
+    private StockLevelView saveAndAnnounce(StockLevel stock, StockChangedEvent.Reason reason) {
+        StockLevel saved = stockLevels.save(stock);
+        events.publishEvent(StockChangedEvent.of(saved, reason));
+        return StockLevelView.from(saved);
     }
 
     private StockLevel require(String productSku) {

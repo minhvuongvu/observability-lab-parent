@@ -1,6 +1,6 @@
 # Observability
 
-Four signals, one vocabulary, ten dashboards. This document is the map: what each signal is for,
+Four signals, one vocabulary, eleven dashboards. This document is the map: what each signal is for,
 how they link to each other, and which dashboard to open when.
 
 The per-signal detail lives in [Logging.md](Logging.md), [Metrics.md](Metrics.md),
@@ -79,8 +79,8 @@ into the MDC under the *same key* the log schema already used, and the outbox st
 
 ## 4. The dashboards
 
-Ten, in folders. **Platform — Overview** is the landing page; the rest are what you open once you
-know which thing is unhappy.
+Eleven, in folders. **Platform — Overview** is the landing page; the rest are what you open once
+you know which thing is unhappy.
 
 | Folder | Dashboard | Open it when |
 | --- | --- | --- |
@@ -90,6 +90,7 @@ know which thing is unhappy.
 | data | **Databases — Connection Pools** | "The site is slow" — check pool saturation first. |
 | data | **Redis — Cache and Commands** | Hit ratio collapsed, or the cache got slower than the database. |
 | messaging | **Kafka — Producers, Consumers, Lag** | The asynchronous half is behind. |
+| grpc | **gRPC — Service Communication** | The internal synchronous hop: RED, the client/server duration gap, and the handler-pool saturation nothing else measures. See [Grpc.md](Grpc.md). |
 | metrics | **Business — Order Flow** | Everything technical is green but orders are not settling. |
 | logs | **Logs — Overview** | You have a correlation id, or want error volume by service. |
 | traces | **Traces — Span Metrics and Service Graph** | Which span is slow, and who calls whom. |
@@ -98,7 +99,7 @@ know which thing is unhappy.
 ### They are generated, not hand-drawn
 
 [`generate.py`](../infrastructure/grafana/dashboards/generate.py) is the source of truth; the JSON
-beside it is output. That is not ceremony — it is what keeps ten dashboards agreeing about what
+beside it is output. That is not ceremony — it is what keeps eleven dashboards agreeing about what
 `service` means, which colour an error is, and how a percentile is computed. Hand-maintained
 dashboards drift, and a dashboard that disagrees with the one next to it is a dashboard nobody
 trusts.
@@ -130,6 +131,9 @@ someone's browser is lost the next time the volume is recreated.
 | Memory climbing | JVM → heap by pool | Profiles → live heap |
 | High CPU, no traffic increase | JVM → CPU | Profiles → CPU flame graph |
 | One request was slow | Logs → its correlation id | its `trace_id` → the waterfall |
+| Alert: `GrpcExecutorSaturated` | gRPC → executor pool | The one saturation with no other symptom: slow calls, idle CPU, healthy heap |
+| gRPC slow but HTTP flat | gRPC → client vs server duration | Gap large ⇒ the channel. Gap small ⇒ Traces → inside the handler |
+| Alert: `GrpcCircuitBreakerOpen` | gRPC → status distribution | Consul catalog: are the instances passing and advertising `grpc-port`? |
 
 ---
 

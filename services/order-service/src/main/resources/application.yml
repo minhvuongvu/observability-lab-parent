@@ -246,6 +246,64 @@ app:
       # without a custom Options bean.
       service-id: inventory-service
 
+  grpc:
+    client:
+      inventory:
+        # Resolved through Consul, exactly like the Feign client - but balanced
+        # by the channel itself rather than by Spring Cloud LoadBalancer. A gRPC
+        # channel multiplexes every RPC over one long-lived HTTP/2 connection,
+        # so anything balancing at layer 4 pins all traffic to one instance.
+        service-id: inventory-service
+        enabled: true
+        # The synchronous reservation attempt that races the Kafka path. Off
+        # leaves every order PENDING until Kafka settles it, which is what the
+        # system did before this step and is still the invariant.
+        express-reservation: true
+
+        # Deadlines, per operation. The rule: a callee's budget must be smaller
+        # than its caller's, or the callee's timeout never fires and the caller
+        # times out first - losing the more specific error.
+        #
+        #   client HTTP budget        3000ms
+        #     order handler           1000ms
+        #       gRPC BatchCheckStock   300ms   <- here
+        #         Oracle query         250ms
+        check-stock-deadline: 200ms
+        batch-check-deadline: 300ms
+        # Deliberately tight: this is an optimisation, and missing it costs
+        # nothing but a fall-through to PENDING.
+        reserve-stock-deadline: 200ms
+
+        # Channel tuning. Keepalive detects a silently dead peer; without it a
+        # half-open connection is discovered only when an RPC hangs to its
+        # deadline.
+        keep-alive-time: 30s
+        keep-alive-timeout: 10s
+        idle-timeout: 5m
+        max-inbound-message-size: 4194304
+        resolver-refresh: 10s
+
+        # Two retries. Beyond that the deadline expires anyway and the extra
+        # attempts land on a dependency that is already struggling.
+        max-retry-attempts: 3
+        # Retries may not exceed this share of traffic. Without a budget, a
+        # per-attempt policy still permits 3x amplification during a partial
+        # outage - which is the most common way a retry policy causes the very
+        # outage it was defending against.
+        retry-budget-ratio: 0.2
+
+        circuit-breaker:
+          sliding-window-size: 20
+          failure-rate-threshold: 50
+          # Trips on slowness as well as on errors. A dependency answering every
+          # call in five seconds is as damaging as one returning errors, and a
+          # pure error-rate breaker never notices.
+          slow-call-rate-threshold: 80
+          slow-call-duration: 250ms
+          # Long enough to let a restart complete.
+          open-duration: 10s
+          half-open-calls: 3
+
 # Surfaced at /actuator/info (management.info.env.enabled below). The default
 # names this file; a value seeded into Consul KV (config/application/data)
 # overrides it - the visible proof that externalised configuration is read.

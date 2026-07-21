@@ -166,7 +166,11 @@ def dashboard(uid, title, description, tags, panels, templating=None, refresh="3
 def write(folder, name, doc):
     d = ROOT / folder
     d.mkdir(parents=True, exist_ok=True)
-    (d / name).write_text(json.dumps(doc, indent=2) + "\n")
+    # newline="\n" explicitly: this repository is developed on macOS and Windows
+    # alike, and Python's default translates "\n" to CRLF on the latter. Without
+    # this, regenerating on Windows rewrites every byte of every dashboard and
+    # the diff is line endings rather than the change actually being reviewed.
+    (d / name).write_text(json.dumps(doc, indent=2) + "\n", newline="\n")
     print(f"  {folder}/{name}")
 
 
@@ -541,6 +545,159 @@ kafka = dashboard(
     ])
 
 # ---------------------------------------------------------------------------
+# 6b. gRPC — the Order → Inventory hop.
+#
+# Reuses the same $service variable and the same status colours as everything
+# else, deliberately: a new protocol must not introduce a new vocabulary, or
+# "is the slowdown in the public API or in the internal hop" becomes two
+# dashboards instead of one filter.
+# ---------------------------------------------------------------------------
+GRPC_FAULTS = 'grpc_status=~"INTERNAL|UNKNOWN|DATA_LOSS|UNAVAILABLE"'
+
+grpc = dashboard(
+    "lab-grpc", "gRPC — Service Communication",
+    "The internal Order → Inventory hop: RED metrics, the client/server duration gap, and the "
+    "saturation signals HTTP does not have. The last row is the one that justifies running both "
+    "protocols — the same logical operation, measured side by side. See docs/Grpc.md.",
+    ["grpc"],
+    [
+        row(100, "Headline", 0),
+        stat(1, "Call rate",
+             'sum(rate(grpc_server_requests_total{service=~"$service"}[$__rate_interval])) or vector(0)',
+             0, 1, unit="reqps", decimals=2, graph="area"),
+        stat(2, "Fault ratio",
+             f'(sum(rate(grpc_server_requests_total{{service=~"$service",{GRPC_FAULTS}}}[$__rate_interval])) or vector(0))'
+             ' / clamp_min(sum(rate(grpc_server_requests_total{service=~"$service"}[$__rate_interval])), 0.001)',
+             6, 1, unit="percentunit", decimals=3,
+             desc="Faults only. NOT_FOUND for an untracked SKU and FAILED_PRECONDITION for a "
+                  "shortage are answers, not failures — counting them would make this track "
+                  "catalogue quality instead of service health, and the alert built on it would "
+                  "be one people mute.",
+             steps=[(GREEN, None), (ORANGE, 0.01), (RED, 0.05)]),
+        stat(3, "p99 (server)",
+             'histogram_quantile(0.99, sum by (le) (rate(grpc_server_request_duration_seconds_bucket{service=~"$service"}[$__rate_interval])))',
+             12, 1, unit="s", decimals=3,
+             desc="Handling time only, excluding network. Compare with the client panel below: the "
+                  "difference between the two is the whole point.",
+             steps=[(GREEN, None), (ORANGE, 0.25), (RED, 0.5)]),
+        stat(4, "Active calls",
+             'sum(grpc_server_active_calls{service=~"$service"}) or vector(0)',
+             18, 1, unit="short", graph="area",
+             desc="In flight. Rising while throughput stays flat means calls are taking longer."),
+
+        row(101, "RED", 5),
+        timeseries(5, "Rate by method",
+                   [target('sum by (grpc_method) (rate(grpc_server_requests_total{service=~"$service"}[$__rate_interval]))',
+                           "{{grpc_method}}")],
+                   0, 6, w=8, unit="reqps", stack=True),
+        timeseries(6, "Status distribution",
+                   [target('sum by (grpc_status) (rate(grpc_server_requests_total{service=~"$service"}[$__rate_interval]))',
+                           "{{grpc_status}}")],
+                   8, 6, w=8, unit="reqps", stack=True,
+                   desc="The taxonomy HTTP cannot express. Business statuses are green because "
+                        "they are the system working; only genuine faults are red.",
+                   overrides=[color_override("OK", GREEN),
+                              color_override("NOT_FOUND", GREEN),
+                              color_override("FAILED_PRECONDITION", GREEN),
+                              color_override("ALREADY_EXISTS", GREEN),
+                              color_override("INVALID_ARGUMENT", ORANGE),
+                              color_override("PERMISSION_DENIED", ORANGE),
+                              color_override("UNAUTHENTICATED", ORANGE),
+                              color_override("RESOURCE_EXHAUSTED", ORANGE),
+                              color_override("DEADLINE_EXCEEDED", ORANGE),
+                              color_override("UNAVAILABLE", RED),
+                              color_override("INTERNAL", RED),
+                              color_override("UNKNOWN", RED)]),
+        timeseries(7, "Latency percentiles (server)",
+                   [target('histogram_quantile(0.50, sum by (le) (rate(grpc_server_request_duration_seconds_bucket{service=~"$service"}[$__rate_interval])))', "p50"),
+                    target('histogram_quantile(0.95, sum by (le) (rate(grpc_server_request_duration_seconds_bucket{service=~"$service"}[$__rate_interval])))', "p95", "B"),
+                    target('histogram_quantile(0.99, sum by (le) (rate(grpc_server_request_duration_seconds_bucket{service=~"$service"}[$__rate_interval])))', "p99", "C")],
+                   16, 6, w=8, unit="s", fill=0,
+                   desc="From bucket counts, which is the only form that aggregates across "
+                        "instances. The deadline is a hard boundary, so watching the bucket just "
+                        "below it is how a timeout is seen coming before it starts firing."),
+
+        row(102, "Client versus server — the gap is the network", 14),
+        timeseries(8, "p99: what the caller waited vs what the callee spent",
+                   [target('histogram_quantile(0.99, sum by (le) (rate(grpc_client_request_duration_seconds_bucket[$__rate_interval])))', "client p99"),
+                    target('histogram_quantile(0.99, sum by (le) (rate(grpc_server_request_duration_seconds_bucket[$__rate_interval])))', "server p99", "B")],
+                   0, 15, w=12, unit="s", fill=0,
+                   desc="Both numbers are needed and they are different. The gap is transport, "
+                        "queueing and connection establishment: a client p99 of 400ms against a "
+                        "server p99 of 15ms is not a slow service, it is a saturated channel — and "
+                        "only having both distinguishes them. Legitimately one axis: same unit.",
+                   overrides=[color_override("client p99", ORANGE),
+                              color_override("server p99", BLUE)]),
+        timeseries(9, "Channel state",
+                   [target('sum by (state) (grpc_client_channel_state) or vector(0)', "{{state}}")],
+                   12, 15, w=12, unit="short",
+                   desc="TRANSIENT_FAILURE means the caller cannot reach the provider at all. It is "
+                        "the first thing to check when the client reports UNAVAILABLE while the "
+                        "provider's own dashboards are green.",
+                   overrides=[color_override("READY", GREEN),
+                              color_override("IDLE", BLUE),
+                              color_override("CONNECTING", ORANGE),
+                              color_override("TRANSIENT_FAILURE", RED),
+                              color_override("SHUTDOWN", RED)]),
+
+        row(103, "Saturation — the signals HTTP does not have", 23),
+        timeseries(10, "gRPC executor pool",
+                   [target('executor_active_threads{name="grpc-executor",service=~"$service"}', "active"),
+                    target('executor_pool_max_threads{name="grpc-executor",service=~"$service"}', "max", "B"),
+                    target('executor_queued_tasks{name="grpc-executor",service=~"$service"}', "queued", "C")],
+                   0, 24, w=8, unit="short", fill=0,
+                   desc="The most important panel here, and the failure with no other symptom: "
+                        "calls are slow, CPU is low, heap is healthy and Tomcat's pool is empty — "
+                        "because gRPC dispatches onto its own executor and the queue is in front of "
+                        "a pool nothing else measures.",
+                   overrides=[color_override("max", TEXT), color_override("queued", ORANGE)]),
+        timeseries(11, "Active calls by type",
+                   [target('sum by (grpc_type) (grpc_server_active_calls{service=~"$service"}) or vector(0)',
+                           "{{grpc_type}}")],
+                   8, 24, w=8, unit="short",
+                   desc="A SERVER_STREAMING count is the number of held subscriptions. They leak "
+                        "silently when a client goes away without cancelling cleanly, so a figure "
+                        "that only ever climbs is the signal."),
+        timeseries(12, "Database pool pressure",
+                   [target('sum by (service) (hikaricp_connections_pending{service=~"$service"})', "{{service}} pending")],
+                   16, 24, w=8, unit="short",
+                   desc="gRPC's higher throughput can expose a connection pool that was sized for "
+                        "one HTTP request per SKU.",
+                   overrides=[color_override("inventory-service pending", ORANGE)]),
+
+        row(104, "Streaming", 32),
+        timeseries(13, "Messages per second",
+                   [target('sum by (grpc_method) (rate(grpc_server_messages_received_total{service=~"$service"}[$__rate_interval]))', "{{grpc_method}} in"),
+                    target('sum by (grpc_method) (rate(grpc_server_messages_sent_total{service=~"$service"}[$__rate_interval]))', "{{grpc_method}} out", "B")],
+                   0, 33, w=12, unit="ops",
+                   desc="Volume is counted, never traced. A stream carrying ten thousand messages "
+                        "should produce a handful of spans and one counter reading ten thousand."),
+        timeseries(14, "Call rate by contract version",
+                   [target('sum by (grpc_service) (rate(grpc_server_requests_total{service=~"$service"}[$__rate_interval]))',
+                           "{{grpc_service}}")],
+                   12, 33, w=12, unit="reqps",
+                   desc="grpc_service carries the major version — inventory.v1.InventoryService. "
+                        "This is the panel that says whether v1 can be retired: it can when this "
+                        "line reaches zero, and not before. A deprecation you cannot measure is a "
+                        "deprecation that never finishes."),
+
+        row(105, "Protocol comparison — the reason for running both", 41),
+        timeseries(15, "Availability check: REST versus gRPC, p99",
+                   [target('histogram_quantile(0.99, sum by (le) (rate(grpc_client_request_duration_seconds_bucket{grpc_method="BatchCheckStock"}[$__rate_interval])))',
+                           "gRPC BatchCheckStock"),
+                    target('histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{service="order-service",uri="/api/v1/orders/availability"}[$__rate_interval])))',
+                           "REST /orders/availability", "B")],
+                   0, 42, w=24, unit="s", fill=0,
+                   desc="The only panel in this system that deliberately puts two protocols on one "
+                        "axis — legitimate because they share a unit and comparison is the entire "
+                        "purpose. Drive it with POST /api/v1/orders/availability?transport=REST "
+                        "and ?transport=GRPC against the same basket. The gap widens with basket "
+                        "size: REST costs one round trip per line, gRPC costs one in total.",
+                   overrides=[color_override("gRPC BatchCheckStock", BLUE),
+                              color_override("REST /orders/availability", ORANGE)]),
+    ])
+
+# ---------------------------------------------------------------------------
 # 7. Traces
 # ---------------------------------------------------------------------------
 traces = dashboard(
@@ -690,5 +847,6 @@ if __name__ == "__main__":
     write("data", "databases.json", databases)
     write("data", "redis.json", redis)
     write("messaging", "kafka.json", kafka)
+    write("grpc", "grpc.json", grpc)
     write("traces", "traces.json", traces)
     write("profiles", "profiles.json", profiles)

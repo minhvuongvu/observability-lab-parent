@@ -193,6 +193,28 @@ public class OrderApplicationService {
     }
 
     /**
+     * Applies a settlement reached on the synchronous path, in a transaction of its own.
+     *
+     * <p>Exists only because of <em>when</em> the express reservation happens: after the order's own
+     * transaction has committed, from a listener running inside that transaction's completion. A
+     * method with the default propagation would join the transaction that is already committing and
+     * the update would be silently discarded — one of the quieter ways Spring can lose a write.
+     *
+     * <p>{@code REQUIRES_NEW} suspends the completing transaction and opens a fresh one, which is
+     * also what lets the gRPC call itself happen with no transaction and therefore no database
+     * connection held across a network call.
+     *
+     * @see com.observability.lab.order.application.ExpressReservationListener
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    @CacheEvict(cacheNames = ORDERS_CACHE, key = "#orderNumber")
+    public OrderView settleExpress(String orderNumber, boolean stockReserved) {
+        // Direct call, not through the proxy: this method already carries the transaction and the
+        // eviction, so re-entering the proxy would only re-apply the same two.
+        return settle(orderNumber, stockReserved);
+    }
+
+    /**
      * Hands out a temporary link to an order's invoice.
      *
      * <p>Rebuilds the invoice when object storage does not have one. The archive is written after the

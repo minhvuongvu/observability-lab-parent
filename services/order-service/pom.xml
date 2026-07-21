@@ -132,6 +132,43 @@
             <artifactId>spring-cloud-starter-consul-config</artifactId>
         </dependency>
 
+        <!--
+            gRPC client. This service is the consumer of inventory.v1: it
+            generates client stubs from the same proto/inventory the provider
+            generates its server base class from, which is what makes a contract
+            mismatch a compile error rather than a field that silently decodes
+            to zero.
+        -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+        </dependency>
+
+        <!--
+            Circuit breaker for the gRPC hop. Retries handle a transient
+            failure; a breaker handles a sustained one, and without it retrying
+            against a service that is down burns this service's threads and
+            deadline while adding load to a dependency already failing.
+
+            The Spring Cloud starter is used for its version governance and its
+            Micrometer binding; the breaker itself is built explicitly in
+            InventoryChannelConfiguration, because the property that matters
+            here - which gRPC statuses count as a failure - cannot be expressed
+            in a status-code-agnostic configuration file.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -140,6 +177,13 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- In-process transport: the client tests drive a real channel through
+             the real interceptors against a stub server, with no port bound. -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-inprocess</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -152,6 +196,14 @@
                 <configuration>
                     <mainClass>com.observability.lab.order.OrderServiceApplication</mainClass>
                 </configuration>
+            </plugin>
+
+            <!-- Generates the client stubs from proto/inventory/v1. Same
+                 plugin, same configuration, same file as the provider - fully
+                 configured in the parent POM. -->
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

@@ -12,6 +12,13 @@ spring:
 
 app:
   environment: prod
+  grpc:
+    server:
+      # Server reflection publishes the full service schema - every method, every
+      # message, every field - to anyone who can reach the port. That is free
+      # reconnaissance, and the .proto is in the repository for anyone entitled
+      # to it.
+      reflection-enabled: false
 
 server:
   error:

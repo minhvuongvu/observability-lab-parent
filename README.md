@@ -112,7 +112,7 @@ log — is in [docs/Architecture.md](docs/Architecture.md).
 | API gateway | Kong Gateway |
 | Identity | Keycloak (OIDC / JWT) |
 | Discovery & config | Consul, Consul KV |
-| Internal RPC | gRPC, Protocol Buffers *(designed — step 15)* |
+| Internal RPC | gRPC, Protocol Buffers |
 | Messaging | Apache Kafka, Kafka UI |
 | Cache | Redis |
 | Object storage | MinIO |
@@ -134,6 +134,7 @@ against OpenSearch, or Tempo against Jaeger, on the *same* traffic is the point 
 .
 ├── pom.xml                      parent POM: toolchain contract, dependency governance
 ├── mvnw, mvnw.cmd, .mvn/        Maven wrapper, pins the build tool version
+├── proto/                       the gRPC contract: inventory/v1, owned by the provider
 ├── services/
 │   ├── shared-library/          cross-service platform code, no business rules
 │   ├── order-service/           order lifecycle, PostgreSQL system of record
@@ -152,8 +153,8 @@ launched*. They are kept apart so either can be read without the other.
 | Module | Artifact | Port | Responsibility |
 | --- | --- | --- | --- |
 | `services/shared-library` | `shared-library` | — | API envelope, exception model, correlation/MDC utilities, tracing helpers, base entities. Depends on no service. |
-| `services/order-service` | `order-service` | 8081 | Owns the order lifecycle. Origin of the distributed trace, producer of `order-created`. |
-| `services/inventory-service` | `inventory-service` | 8082 | Owns stock levels. Consumes `order-created`, produces `inventory-updated`. |
+| `services/order-service` | `order-service` | 8081 | Owns the order lifecycle. Origin of the distributed trace, producer of `order-created`, gRPC **client**. |
+| `services/inventory-service` | `inventory-service` | 8082 (REST)<br/>9082 (gRPC) | Owns stock levels. Consumes `order-created`, produces `inventory-updated`, gRPC **server**. |
 
 ---
 
@@ -228,7 +229,7 @@ connects to PostgreSQL, Redis and Kafka.
 | `POST /api/v1/orders` | Place an order. Returns 201 `PENDING` and enqueues `order-created` in the outbox. |
 | `GET /api/v1/orders/{orderNumber}` | Read one order, served from Redis when warm. |
 | `GET /api/v1/orders` | List orders, filterable by `customerId` and `status`, paginated. |
-| `POST /api/v1/orders/availability` | Advisory stock check. Calls Inventory over HTTP, resolved through Consul. Reserves nothing. |
+| `POST /api/v1/orders/availability` | Advisory stock check. `?transport=GRPC` (default) is one round trip for the whole basket; `?transport=REST` is one request per line. Reserves nothing. |
 | `GET /api/v1/orders/{orderNumber}/invoice` | A short-lived signed URL to the invoice in MinIO. Rebuilds it if absent. |
 | `POST /api/v1/orders/{orderNumber}/cancel` | Cancel. 422 if the status does not allow it. |
 | `DELETE /api/v1/orders/{orderNumber}` | Remove a cancelled or rejected order. |
@@ -359,9 +360,10 @@ by service and environment.
 | [docs/Metrics.md](docs/Metrics.md) | Micrometer instrument types, common tags and cardinality, histograms vs pre-computed percentiles, Prometheus and VictoriaMetrics, rules and dashboards |
 | [docs/Tracing.md](docs/Tracing.md) | The OpenTelemetry agent, the collector fan-out to Tempo/Jaeger/Zipkin, span attributes, events, status and links, and cross-signal correlation |
 | [docs/Profiling.md](docs/Profiling.md) | Continuous profiling with async-profiler and Pyroscope: CPU, allocation, live heap and lock contention, and the trace-to-profile link |
-| [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the ten dashboards, and where to look by symptom |
+| [docs/Grpc.md](docs/Grpc.md) | The internal gRPC hop: the contract and codegen, the interceptor chain, discovery and client-side load balancing, deadlines, status taxonomy, retries, circuit breaking, and what all of it emits |
+| [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the eleven dashboards, and where to look by symptom |
 
-### gRPC (step 15 — designed)
+### gRPC — the design behind step 15
 
 | Document | Contents |
 | --- | --- |
@@ -400,8 +402,8 @@ documented before the next one starts.
 | 12 | Tracing: OpenTelemetry agent and Collector, Tempo, Jaeger, Zipkin | **Complete** |
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | **Complete** |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
-| **15** | **Enterprise gRPC: proto contracts, streaming, deadlines, gRPC observability** | **Designed** |
-| 16 | Failure simulation: timeouts, leaks, CPU spikes, DLQ, circuit breakers | Planned |
+| 15 | Enterprise gRPC: proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
+| **16** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
 | 17 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and

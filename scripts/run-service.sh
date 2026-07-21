@@ -82,6 +82,24 @@ if [ -z "${SERVICE_HOSTNAME:-}" ]; then
 fi
 export SERVICE_HOSTNAME="${SERVICE_HOSTNAME:-host.docker.internal}"
 
+# ---------------------------------------------------------------------------
+# gRPC.
+#
+# The Inventory Service serves inventory.v1.InventoryService on its own port,
+# alongside its REST API. The port is registered in Consul as metadata, and the
+# Order Service's channel resolves it from there - so this address has to be
+# reachable from the *host*, where the other service actually runs, and not only
+# from inside a container.
+#
+# Bound to the same interface the service advertises for exactly that reason:
+# leaving it on loopback while advertising a LAN address would register an
+# endpoint nothing outside this process can connect to.
+# ---------------------------------------------------------------------------
+if [ "${SERVICE}" = "inventory-service" ]; then
+  export GRPC_PORT="${GRPC_PORT:-9082}"
+  export GRPC_BIND_ADDRESS="${GRPC_BIND_ADDRESS:-0.0.0.0}"
+fi
+
 # Absolute, and inside the repository: Promtail, Fluent Bit and Fluentd all
 # bind-mount this directory to tail the JSON logs. A relative path would put the
 # files wherever the service happened to be started from, which is exactly the
@@ -212,6 +230,9 @@ echo "  consul    ${CONSUL_HOST}:${CONSUL_PORT}"
 echo "  minio     ${MINIO_ENDPOINT} (bucket ${MINIO_INVOICE_BUCKET})"
 echo "  issuer    ${KEYCLOAK_ISSUER}"
 echo "  registers as ${SERVICE_HOSTNAME}"
+if [ -n "${GRPC_PORT:-}" ]; then
+  echo "  grpc      ${GRPC_BIND_ADDRESS}:${GRPC_PORT} (inventory.v1.InventoryService)"
+fi
 echo "  json logs ${LOG_DIR}/${SERVICE}.json"
 if [ "${OTEL_SDK_DISABLED:-false}" != "true" ]; then
   echo "  traces    ${OTEL_EXPORTER_OTLP_ENDPOINT} (otlp/${OTEL_EXPORTER_OTLP_PROTOCOL})"

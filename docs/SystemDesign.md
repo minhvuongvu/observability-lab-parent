@@ -266,17 +266,24 @@ An exception carries an `ErrorCode`, which carries an `ErrorCategory`. The categ
 exception type — decides the status code and the log level, so adding a failure mode means declaring
 a code, never editing the handler.
 
-| Category | Exception | HTTP | Log level | Meaning |
-| --- | --- | --- | --- | --- |
-| `VALIDATION` | `ValidationException` | 400 | `WARN` | The request is malformed. The caller must change something. |
-| `AUTHENTICATION` | `UnauthorizedException` | 401 | `WARN` | Missing or invalid token. |
-| `AUTHORIZATION` | `ForbiddenException` | 403 | `WARN` | Valid token, insufficient role. |
-| `NOT_FOUND` | `ResourceNotFoundException` | 404 | `WARN` | The addressed resource does not exist. |
-| `CONFLICT` | `BusinessException` | 409 | `INFO` | The request conflicts with current state. |
-| `BUSINESS_RULE` | `BusinessException` | 422 | `INFO` | A rule was correctly enforced — insufficient stock, illegal status transition. **Not** an error. |
-| `INTEGRATION` | `IntegrationException.failed` | 502 | `ERROR` | A downstream dependency failed. |
-| `TIMEOUT` | `IntegrationException.timedOut` | 504 | `ERROR` | A downstream dependency did not answer in time. |
-| `TECHNICAL` | `TechnicalException` | 500 | `ERROR` | Anything unexpected. Always logged with a stack trace. |
+| Category | Exception | HTTP | gRPC | Log level | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `VALIDATION` | `ValidationException` | 400 | `INVALID_ARGUMENT` | `WARN` | The request is malformed. The caller must change something. |
+| `AUTHENTICATION` | `UnauthorizedException` | 401 | `UNAUTHENTICATED` | `WARN` | Missing or invalid token. |
+| `AUTHORIZATION` | `ForbiddenException` | 403 | `PERMISSION_DENIED` | `WARN` | Valid token, insufficient role. |
+| `NOT_FOUND` | `ResourceNotFoundException` | 404 | `NOT_FOUND` | `WARN` | The addressed resource does not exist. |
+| `CONFLICT` | `BusinessException` | 409 | `ALREADY_EXISTS` | `INFO` | The request conflicts with current state. |
+| `BUSINESS_RULE` | `BusinessException` | 422 | `FAILED_PRECONDITION` | `INFO` | A rule was correctly enforced — insufficient stock, illegal status transition. **Not** an error. |
+| `INTEGRATION` | `IntegrationException.failed` | 502 | `UNAVAILABLE` | `ERROR` | A downstream dependency failed. |
+| `TIMEOUT` | `IntegrationException.timedOut` | 504 | `DEADLINE_EXCEEDED` | `ERROR` | A downstream dependency did not answer in time. |
+| `TECHNICAL` | `TechnicalException` | 500 | `INTERNAL` | `ERROR` | Anything unexpected. Always logged with a stack trace. |
+
+**One exception hierarchy, two transport mappings.** The gRPC column is derived from the same
+`ErrorCategory` by `GrpcStatusMapper`, so the same refusal is a 422 over REST and
+`FAILED_PRECONDITION` over gRPC, and neither counts as a fault. On the gRPC side the mapping is not
+merely presentational — the retry policy keys off the status code, so a database timeout classified
+as `INTERNAL` rather than `UNAVAILABLE` is a request that fails instead of one that is retried
+successfully. See [Grpc.md](Grpc.md#52-status-taxonomy).
 
 `UnauthorizedException` and `ForbiddenException` are named to avoid colliding with Spring Security's
 `AuthenticationException` and `AccessDeniedException`. Two types with one simple name in a codebase
@@ -301,7 +308,11 @@ code identifies its owner unambiguously in a shared log store.
 | Connect / read timeouts | Every remote call | No call may block indefinitely. An unbounded wait is how one slow dependency takes down a whole service. |
 | Retry with exponential backoff + jitter | Idempotent operations only | Jitter prevents retry storms synchronising into a thundering herd. |
 | Deadlines (gRPC) | Every gRPC call | Absolute and propagated in `grpc-timeout` metadata, so the callee can decline work whose caller has already given up. Budgets shrink inward. |
-| Circuit breaker | Feign and gRPC clients | Stop hammering a dependency that is already failing; fail fast and shed load. Trips on slow calls as well as errors — a dependency answering in 5 s is as damaging as one returning errors. |
+| Circuit breaker | The gRPC client | Stop hammering a dependency that is already failing; fail fast and shed load. Trips on slow calls as well as errors — a dependency answering in 5 s is as damaging as one returning errors. Business statuses are deliberately **not** counted, or unusual data would cut off a healthy service. |
+| Retry budget | The gRPC channel | Caps retries at 20% of traffic. A per-attempt policy alone still permits 3x amplification during a partial outage, which is the most common way a retry policy causes the outage it was defending against. |
+| Defined fallback | Every gRPC call | A breaker with no fallback is just a faster failure. Availability degrades to "unknown"; the express reservation falls through to the Kafka path. |
+| Client-side load balancing | The gRPC channel | A gRPC channel multiplexes every RPC over one long-lived connection, so an L4 proxy pins all traffic to one instance. The channel resolves Consul itself and balances per RPC. |
+| Bounded handler queue | The gRPC server | Overload surfaces as `RESOURCE_EXHAUSTED` — retryable, and visible — rather than as unbounded latency and eventually an `OutOfMemoryError`. |
 | Bulkhead | Remote call pools | One saturated dependency cannot consume every thread. |
 | Consumer retry topic | Kafka consumers | Delayed redelivery without blocking the partition. |
 | Dead-letter topic | Kafka consumers | A poisoned message is parked for inspection instead of blocking the partition forever. |

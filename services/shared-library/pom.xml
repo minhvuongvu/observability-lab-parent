@@ -86,6 +86,36 @@
         </dependency>
 
         <!--
+            gRPC, for the interceptors this module contributes to both sides of
+            the Order -> Inventory hop. Optional and API-only: no transport, no
+            code generation, nothing that decides how a service listens.
+
+            These live here rather than in each service for the same reason
+            CorrelationFilter does - correlation, log shape, status mapping and
+            metric names must be identical on the client and the server, and a
+            cross-cutting concern each service has to remember to wire up is one
+            that is missing from whichever service was written in a hurry.
+        -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- For google.rpc.Status and google.rpc.BadRequest: gRPC carries
+             structured error detail alongside the status, and a message string
+             forces the client to parse English. -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
             The OpenTelemetry API only - never the SDK, and never the agent.
             Application code uses this to add attributes, events and links to
             whatever span the agent has already started. Depending on the SDK

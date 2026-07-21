@@ -38,6 +38,17 @@ public final class CorrelationFields {
     public static final String VERSION = "version";
 
     /**
+     * Which transport carried this work: {@code http} or {@code grpc}.
+     *
+     * <p>Set on both sides deliberately. "Is the slowdown in the public API or in the internal hop"
+     * should be a filter on one field rather than on the absence of one — an absent field cannot be
+     * grouped by, which is exactly what a protocol comparison needs to do.
+     *
+     * @see com.observability.lab.shared.grpc.GrpcFields#PROTOCOL_GRPC
+     */
+    public static final String PROTOCOL = "protocol";
+
+    /**
      * Every field this library manages, in the order a human reads them.
      *
      * <p>Used to clear precisely what was set. Wiping the entire MDC instead would discard keys put
@@ -45,7 +56,8 @@ public final class CorrelationFields {
      * up under load.
      */
     public static final List<String> ALL = List.of(
-            TRACE_ID, SPAN_ID, REQUEST_ID, CORRELATION_ID, USER_ID, SERVICE, ENVIRONMENT, VERSION);
+            TRACE_ID, SPAN_ID, REQUEST_ID, CORRELATION_ID, USER_ID,
+            SERVICE, ENVIRONMENT, VERSION, PROTOCOL);
 
     private CorrelationFields() {
         throw new AssertionError("No instances.");

@@ -26,8 +26,8 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 12 | Tracing: OpenTelemetry agent and Collector, Tempo, Jaeger, Zipkin | **Complete** |
 | 13 | Profiling: Pyroscope agent and server, CPU/alloc/heap/lock profiles | **Complete** |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
-| **15** | **Enterprise gRPC communication** — proto contracts, streaming, deadlines, gRPC observability | **Designed** |
-| 16 | Failure simulation: timeouts, leaks, CPU spikes, DLQ, circuit breakers | Planned |
+| 15 | Enterprise gRPC communication — proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
+| **16** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
 | 17 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 > **Numbering note.** gRPC is inserted as step 15; failure simulation and documentation shift to 16
@@ -39,6 +39,10 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 ---
 
 ## Step 15 — Enterprise gRPC Communication
+
+> **Built.** The implementation and how to exercise it are in [docs/Grpc.md](docs/Grpc.md);
+> the documents below are the design that preceded it, and remain the reasoning behind each
+> decision.
 
 ### Why here
 
