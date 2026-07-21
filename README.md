@@ -112,6 +112,7 @@ log — is in [docs/Architecture.md](docs/Architecture.md).
 | API gateway | Kong Gateway |
 | Identity | Keycloak (OIDC / JWT) |
 | Discovery & config | Consul, Consul KV |
+| Internal RPC | gRPC, Protocol Buffers *(designed — step 15)* |
 | Messaging | Apache Kafka, Kafka UI |
 | Cache | Redis |
 | Object storage | MinIO |
@@ -360,8 +361,21 @@ by service and environment.
 | [docs/Profiling.md](docs/Profiling.md) | Continuous profiling with async-profiler and Pyroscope: CPU, allocation, live heap and lock contention, and the trace-to-profile link |
 | [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the ten dashboards, and where to look by symptom |
 
+### gRPC (step 15 — designed)
+
+| Document | Contents |
+| --- | --- |
+| [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) | **The cross-protocol view.** Full architecture, communication matrix, the complete request flow across REST, gRPC and Kafka |
+| [LEARNING_ROADMAP.md](LEARNING_ROADMAP.md) | Every step, what it teaches, and the reading order by goal |
+| [GRPC_ENHANCEMENT_ANALYSIS.md](GRPC_ENHANCEMENT_ANALYSIS.md) | Why gRPC, justified from a measurable N+1 defect in the current REST path |
+| [GRPC_ARCHITECTURE.md](GRPC_ARCHITECTURE.md) | Communication matrix, channel design, metadata propagation, the four RPC flows |
+| [GRPC_PROTO_DESIGN.md](GRPC_PROTO_DESIGN.md) | The contract: versioning, field numbering, enum evolution, breaking-change prevention |
+| [GRPC_OBSERVABILITY.md](GRPC_OBSERVABILITY.md) | gRPC logging, RED and USE metrics, trace propagation, streaming spans, the dashboard |
+| [GRPC_ERROR_HANDLING.md](GRPC_ERROR_HANDLING.md) | Status-code taxonomy, deadlines, retries, circuit breaking, load balancing |
+| [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md) | Seven chaos scenarios, with the expected signal-by-signal response for each |
+
 Deployment, Gateway, Runbook, Troubleshooting, Performance and Security guides are produced by the
-steps that introduce each capability, and consolidated in step 16.
+steps that introduce each capability, and consolidated in step 17.
 
 ---
 
@@ -383,11 +397,12 @@ documented before the next one starts.
 | 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | **Complete** |
 | 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | **Complete** |
 | 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | **Complete** |
-| 12 | Tracing: OpenTelemetry SDK and Collector, Tempo, Jaeger, Zipkin | Planned |
+| 12 | Tracing: OpenTelemetry agent and Collector, Tempo, Jaeger, Zipkin | **Complete** |
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | **Complete** |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
-| 15 | Failure simulation: timeouts, leaks, CPU spikes, DLQ, circuit breakers | Planned |
-| 16 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
+| **15** | **Enterprise gRPC: proto contracts, streaming, deadlines, gRPC observability** | **Designed** |
+| 16 | Failure simulation: timeouts, leaks, CPU spikes, DLQ, circuit breakers | Planned |
+| 17 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 `PROMPT_MICROSERVICE_OBSERVABILITY_STEPS.md` (the order to build it in).

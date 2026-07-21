@@ -120,7 +120,7 @@
       "type": "flamegraph",
       "id": 3,
       "title": "Live heap",
-      "description": "What is still retained. This is the one that finds a leak \u2014 allocation volume alone says nothing about what is being held.",
+      "description": "What is still retained, from PYROSCOPE_ALLOC_LIVE. This is the one that finds a leak: allocation volume alone says nothing about what is being held, because most allocation is short-lived garbage the collector reclaims for free.",
       "datasource": {
         "type": "grafana-pyroscope-datasource",
         "uid": "pyroscope"
@@ -135,7 +135,7 @@
         {
           "refId": "A",
           "queryType": "profile",
-          "profileTypeId": "memory:alloc_in_new_tlab_objects:count:space:bytes",
+          "profileTypeId": "memory:live:count:objects:count",
           "labelSelector": "{service_name=\"$service\"}",
           "groupBy": []
         }

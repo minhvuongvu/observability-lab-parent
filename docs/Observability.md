@@ -169,5 +169,5 @@ docker compose --profile search up -d
 - **No Alertmanager.** Rules evaluate and show as firing in Prometheus and Grafana; routing and
   paging are a component the lab does not currently need.
 - **The flame graphs are boring.** The business logic is deliberately trivial, so profiles are
-  dominated by framework startup and idle poll loops. Step 15's failure-simulation endpoints are what
+  dominated by framework startup and idle poll loops. Step 16's failure-simulation endpoints are what
   give all four signals something worth looking at.

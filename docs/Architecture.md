@@ -81,9 +81,9 @@ flowchart TB
 
     subgraph AppPlane["Application plane"]
         direction LR
-        Order["Order Service<br/>:8081"]
-        Inventory["Inventory Service<br/>:8082"]
-        Order -- "Feign, synchronous" --> Inventory
+        Order["Order Service<br/>REST :8081"]
+        Inventory["Inventory Service<br/>REST :8082<br/>gRPC :9082"]
+        Order -- "gRPC, synchronous" --> Inventory
     end
 
     subgraph DataPlane["Data plane"]
@@ -139,8 +139,14 @@ The same pair of services talks both synchronously and asynchronously, on purpos
 
 | Pattern | Used for | Failure behaviour |
 | --- | --- | --- |
-| **REST via Feign** | Reads that the caller cannot proceed without, such as validating stock before accepting an order | Timeout, bounded retry with backoff, circuit breaker; caller degrades to a cached or conservative answer |
+| **REST (external)** | The public API: client → Nginx → Kong → service | Standard HTTP semantics; gateway applies rate limits and JWT policy |
+| **REST via Feign (internal)** | Retained for compatibility; the internal read path is migrating to gRPC | Timeout, bounded retry with backoff, circuit breaker; caller degrades to a cached or conservative answer |
+| **gRPC** | Internal synchronous calls the caller must wait for: batch stock checks, express reservation, streaming | Deadline (200–300 ms), retry on retryable statuses only, circuit breaker on errors *and* slow calls, fallback to a degraded answer or to the Kafka path |
 | **Kafka events** | State changes other services react to: `order-created`, `inventory-updated` | Consumer retry topic with backoff, then a dead-letter topic; producer is unaffected by consumer failure |
+
+The selection rule, stated once: **REST at the edge; gRPC between services when the caller must wait;
+Kafka when it must not.** The full matrix is in [SYSTEM_ARCHITECTURE.md](../SYSTEM_ARCHITECTURE.md#2-communication-matrix),
+and the design rationale in [GRPC_ARCHITECTURE.md](../GRPC_ARCHITECTURE.md).
 
 The contrast is the lesson. The synchronous path couples availability — if Inventory is slow, Order is
 slow — and shows up as latency and circuit-breaker metrics. The asynchronous path decouples
@@ -316,26 +322,41 @@ bring up only the slice they are studying. See [`docker/README.md`](../docker/RE
 | ADR-08 | Shared library for cross-cutting code | Correlation, error envelope and MDC handling must be *identical* across services; copies drift. | The library must stay business-free, or it becomes a distributed monolith. |
 | ADR-09 | Nginx in front of Kong | Separates network entry and TLS from API policy, as most real deployments do. | An extra hop; it also yields a second, independent latency measurement. |
 | ADR-10 | Failure-simulation endpoints ship with the services | Observability cannot be learned on a system that never misbehaves. | They must be disabled outside `local`/`dev`. Guarded by profile and role. |
+| ADR-11 | gRPC for Order → Inventory synchronous calls | A measurable N+1 on the checkout path, a class of silent contract bug, and three access patterns REST expresses poorly. | A second transport to operate and observe; the comparison is the teaching material. |
+| ADR-12 | Separate gRPC port rather than the servlet container | Preserves HTTP/2 flow control and the Netty transport gRPC is tuned for. | One more listener to health-check. |
+| ADR-13 | Client-side load balancing via Consul, no L4 proxy | A gRPC channel is long-lived, so a layer-4 proxy pins every RPC to one instance. | The client owns balancing; instance changes must reach the resolver. |
+| ADR-14 | Kafka remains authoritative for reservation | Availability decoupling is the one property gRPC cannot provide. | Two paths to one effect; idempotency on `event_id` makes it safe. |
+| ADR-15 | Inventory's REST API is retained alongside gRPC | It is public, gateway-routed, and used by clients that will never speak gRPC. | Two transports over one application service — deliberate, behaviour shared. |
+| ADR-16 | Proto owned by the provider, additive-only | A consumer-owned or committee-owned schema becomes a distributed monolith. | Breaking changes require a new versioned package, never an edit. |
+| ADR-17 | `buf breaking` enforced in CI | A wire-incompatible change is invisible to all four telemetry signals. | The pipeline fails rather than a consumer silently decoding garbage. |
 
 ## 12. Current state
 
-This document describes the target. What is actually running today:
+This document describes the target. What is actually built and running:
 
 | Working | Notes |
 | --- | --- |
-| Both services, end to end | Order Service on PostgreSQL, Inventory Service on Oracle, each with CRUD, validation, caching and actuator |
-| The asynchronous half of the flow | Order publishes `order-created` after commit; Inventory consumes it idempotently and reserves stock |
-| The edge | Client → Nginx → Kong → service, with routing, rate limiting, upstream health checks and identity-header stripping |
-| Infrastructure | All ten components under Docker Compose with healthchecks and init scripts |
+| Both services, end to end | Order on PostgreSQL, Inventory on Oracle, with CRUD, validation, caching and actuator |
+| The full order flow | Transactional outbox → `order-created` → idempotent reservation → `inventory-updated` → settlement. Retry and dead-letter topic included |
+| The edge | Client → Nginx → Kong → service, with routing, rate limiting and upstream health checks |
+| Authentication | Keycloak realm, clients, roles and users; JWT verified at the gateway and re-validated in each service |
+| Service discovery | Both services register with Consul; Feign resolves `inventory-service` through the registry, filtered to passing instances |
+| Configuration | Consul KV, watched, overriding the bundled `application.yml` |
+| Object storage | Invoices in MinIO, handed out as short-lived signed URLs |
+| **Logging** | JSON with 8 correlation fields; Promtail and Fluent Bit → Loki, Fluentd → OpenSearch |
+| **Metrics** | Micrometer → Prometheus → VictoriaMetrics; JVM, HTTP, pool, Kafka, Redis and business metrics; recording and alert rules |
+| **Tracing** | OpenTelemetry Java agent → Collector → Tempo, Jaeger and Zipkin; span links across the outbox |
+| **Profiling** | Pyroscope: CPU, allocation, live heap and lock contention, linked from traces |
+| **Dashboards** | Ten Grafana dashboards, generated from one source, every query verified against live data |
 
-Deliberately not yet true, despite being described above:
+Described above but not yet built:
 
-| Not yet | Arrives in |
+| Not yet | Status |
 | --- | --- |
-| **TLS at the edge.** Nginx serves plain HTTP. Every port binds to `127.0.0.1`, so TLS would encrypt a loopback hop while adding certificate handling that obscures the gateway behaviour. A deployment reachable from elsewhere terminates TLS at Nginx. | — |
-| **JWT enforcement.** The plugin is configured on the routes but not enforcing: there is no realm issuing tokens yet, and an enabled plugin with no verification key rejects everything. | Step 07 |
-| **Service discovery.** Kong addresses upstream targets statically; services do not register anywhere. | Step 08 |
-| **The reply leg of the flow.** Inventory records its decision but does not publish `inventory-updated`, so orders stay `PENDING` even when stock was reserved. Retries, the dead-letter topic and the transactional outbox are part of the same work. | Step 09 |
-| **The entire observability stack.** No collector, no metric or log or trace store, no dashboards. | Steps 10–14 |
+| **TLS at the edge.** Nginx serves plain HTTP. Every port binds to `127.0.0.1`, so TLS would encrypt a loopback hop while adding certificate handling that obscures gateway behaviour. A deployment reachable from elsewhere terminates TLS at Nginx. | Deliberate for a single-host lab |
+| **gRPC between services.** Designed in full — see [GRPC_ARCHITECTURE.md](../GRPC_ARCHITECTURE.md) and its companions — but not implemented. Sections 4 and 6 above describe the target including gRPC. | Step 15 |
+| **Circuit breakers.** Timeouts and retries exist; the breaker around the internal synchronous call arrives with gRPC. | Step 15 |
+| **Failure-simulation endpoints.** Including the seven gRPC chaos scenarios. | Step 16 |
+| **Runbook and consolidated guides.** | Step 17 |
 
-See the step table in the [root README](../README.md).
+See [LEARNING_ROADMAP.md](../LEARNING_ROADMAP.md) for the full step table.

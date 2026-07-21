@@ -215,8 +215,10 @@ One host, so ports must not collide. Ports are assigned once, here.
 | Kong admin | 8001 | Administrative API |
 | Kong manager | 8002 | Web UI |
 | Keycloak | 8080 | OIDC endpoints, admin console |
-| **Order Service** | **8081** | |
-| **Inventory Service** | **8082** | |
+| **Order Service** — REST | **8081** | |
+| **Order Service** — gRPC | **9081** | Reserved; Order is a gRPC client only today |
+| **Inventory Service** — REST | **8082** | |
+| **Inventory Service** — gRPC | **9082** | `90xx` mirrors `80xx`. Internal only — not routed through Kong |
 | Kafka UI | 8090 | |
 | VictoriaMetrics | 8428 | Long-term metric storage |
 | Consul | 8500 | UI and HTTP API |
@@ -298,7 +300,8 @@ code identifies its owner unambiguously in a shared log store.
 | --- | --- | --- |
 | Connect / read timeouts | Every remote call | No call may block indefinitely. An unbounded wait is how one slow dependency takes down a whole service. |
 | Retry with exponential backoff + jitter | Idempotent operations only | Jitter prevents retry storms synchronising into a thundering herd. |
-| Circuit breaker | Feign clients | Stop hammering a dependency that is already failing; fail fast and shed load. |
+| Deadlines (gRPC) | Every gRPC call | Absolute and propagated in `grpc-timeout` metadata, so the callee can decline work whose caller has already given up. Budgets shrink inward. |
+| Circuit breaker | Feign and gRPC clients | Stop hammering a dependency that is already failing; fail fast and shed load. Trips on slow calls as well as errors — a dependency answering in 5 s is as damaging as one returning errors. |
 | Bulkhead | Remote call pools | One saturated dependency cannot consume every thread. |
 | Consumer retry topic | Kafka consumers | Delayed redelivery without blocking the partition. |
 | Dead-letter topic | Kafka consumers | A poisoned message is parked for inspection instead of blocking the partition forever. |
@@ -354,6 +357,10 @@ Lab-scale, chosen to be observable on one host rather than to be impressive.
 | --- | --- |
 | Order creation latency (p95, happy path) | < 300 ms end to end through the gateway |
 | Feign call timeout | 2 s connect, 5 s read |
+| gRPC deadline — `CheckStock` | 200 ms |
+| gRPC deadline — `BatchCheckStock` | 300 ms |
+| gRPC deadline — `ReserveStock` (express path) | 200 ms; missing it falls through to the Kafka path |
+| Batch stock check, 25 lines | 1 round trip (was 25 over REST) |
 | Kafka end-to-end lag (steady state) | < 5 s from `order-created` to order confirmation |
 | Service startup | < 30 s to healthy |
 | Graceful shutdown | ≤ 30 s (Order), ≤ 45 s (Inventory, to finish the current batch) |

@@ -479,6 +479,76 @@ Stop.
 
 # STEP 15
 
+## Enterprise gRPC Communication
+
+Add gRPC service-to-service communication.
+
+Keep REST.
+
+Keep Kafka.
+
+Implement
+
+Proto Contract
+
+Protocol Buffers Versioning
+
+gRPC Server
+
+gRPC Client
+
+Unary RPC
+
+Server Streaming
+
+Client Streaming
+
+Metadata Propagation
+
+Deadline Propagation
+
+Status Code Mapping
+
+Retry
+
+Circuit Breaker
+
+Client-side Load Balancing
+
+Service Discovery Integration
+
+Observability
+
+gRPC Logging
+
+gRPC Metrics
+
+RED Metrics
+
+USE Metrics
+
+Trace Propagation
+
+Design documentation exists in
+
+GRPC_ENHANCEMENT_ANALYSIS.md
+
+GRPC_ARCHITECTURE.md
+
+GRPC_PROTO_DESIGN.md
+
+GRPC_OBSERVABILITY.md
+
+GRPC_ERROR_HANDLING.md
+
+GRPC_FAILURE_SIMULATION.md
+
+Stop.
+
+---
+
+# STEP 16
+
 ## Production Failure Simulation
 
 Create endpoints for
@@ -517,7 +587,7 @@ Stop.
 
 ---
 
-# STEP 16
+# STEP 17
 
 ## Documentation
 

@@ -18,7 +18,7 @@ by whichever producer connects first.
 | `order-created` | Order Service (outbox relay) | Inventory Service | 7d |
 | `inventory-updated` | Inventory Service | Order Service | 7d |
 | `dead-letter-topic` | both, on exhausted retries | nobody | 30d |
-| `retry-topic` | reserved for step 15 | — | 7d |
+| `retry-topic` | reserved for step 16 | — | 7d |
 
 Dead letters are kept far longer than successes: a dead letter is only useful if it is still there
 when somebody finally looks at the alert.
