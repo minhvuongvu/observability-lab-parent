@@ -274,7 +274,7 @@ measures.
 
 ## 2.5 Alerts
 
-Added to [`lab-alerts.yml`](infrastructure/prometheus/rules/lab-alerts.yml), following the existing
+Added to [`alerts-grpc.yml`](infrastructure/prometheus/rules/alerts-grpc.yml), following the existing
 rule: few, and each one actionable.
 
 ```yaml

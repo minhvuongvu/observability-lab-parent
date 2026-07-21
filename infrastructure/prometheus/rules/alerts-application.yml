@@ -1,0 +1,179 @@
+# ---------------------------------------------------------------------------
+# Application alerts: what a user experiences, and the resources inside the JVM
+# that decide whether they keep experiencing it.
+#
+# These are the ones that page. An infrastructure alert says a machine is
+# working hard; these say somebody's request failed.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-application-red
+    interval: 30s
+    rules:
+
+      - alert: HighHttpFaultRate
+        # A ratio, not an absolute count: ten errors per second is a
+        # catastrophe at low traffic and noise at high traffic, and only the
+        # ratio means the same thing at both.
+        #
+        # Built on lab:http_fault_rate (5xx only), NOT lab:http_error_rate.
+        # Counting 4xx here would page this team every time a client sent a
+        # malformed request - somebody else's bug, on our phone.
+        expr: |
+          lab:http_fault_rate:5m / clamp_min(lab:http_request_rate:5m, 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} is failing more than 5% of requests"
+          description: "{{ $value | humanizePercentage }} of requests returned 5xx over five minutes."
+          impact: "Users are seeing errors. This is the alert that means the product is broken."
+          action: "HTTP dashboard for the endpoint, then Traces for an error span, then its log line by trace id."
+          runbook: "docs/Alerting.md#highhttpfaultrate"
+          dashboard: "http://localhost:3000/d/lab-http"
+
+      - alert: HighHttpLatency
+        # p99 from buckets. A mean would stay flat while one request in a
+        # hundred took four seconds, which is exactly the case worth alerting on.
+        expr: lab:http_latency_p99:5m > 1
+        for: 10m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} p99 latency is above 1s"
+          description: "p99 is {{ $value | printf \"%.2f\" }}s over five minutes."
+          impact: "The slowest 1% of requests are slow enough for a user to notice and retry."
+          action: "Databases dashboard for pool waits, then Traces for the slowest spans, then Profiles."
+          runbook: "docs/Alerting.md#highhttplatency"
+          dashboard: "http://localhost:3000/d/lab-http"
+
+      - alert: UnusualTrafficVolume
+        # Informational. Not a fault - context for reading everything else on
+        # this page, because most "the system got slower" questions turn out to
+        # be "the system got busier".
+        expr: |
+          sum by (service) (lab:http_request_rate:5m) > 50
+        for: 10m
+        labels:
+          severity: info
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} is serving unusually high traffic"
+          description: "{{ $value | printf \"%.1f\" }} requests/second sustained for ten minutes."
+          impact: "None directly. Read the latency and saturation alerts in this light."
+          action: "None. Note the time when interpreting other alerts."
+          runbook: "docs/Alerting.md#unusualtrafficvolume"
+          dashboard: "http://localhost:3000/d/lab-platform-overview"
+
+  - name: lab-application-saturation
+    interval: 30s
+    rules:
+
+      - alert: TomcatThreadPoolSaturated
+        # Thread exhaustion, HTTP side. When this pool is full Tomcat queues
+        # connections and every request waits, while CPU and heap both look
+        # fine - so the symptom is latency with no obvious cause.
+        expr: lab:tomcat_thread_used_ratio > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} is running out of request threads"
+          description: "{{ $value | humanizePercentage }} of Tomcat's maximum threads are busy."
+          impact: "Requests queue before they are handled. Latency rises with no error and no CPU load."
+          action: "Check what the threads are blocked on: database pool waits first, then a slow downstream call."
+          runbook: "docs/Alerting.md#tomcatthreadpoolsaturated"
+          dashboard: "http://localhost:3000/d/lab-jvm"
+
+      - alert: JvmHeapPressure
+        # Ratio of used to max, summed across pools. A full Eden is what a
+        # healthy collector looks like, so a per-pool alert would fire forever.
+        expr: lab:jvm_heap_used_ratio > 0.90
+        for: 10m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} heap is above 90% of maximum"
+          description: "{{ $value | humanizePercentage }} of the maximum heap is in use after collection."
+          impact: "GC pauses lengthen, then requests slow, then the process is OOM-killed."
+          action: "Profiles -> live heap. Allocation volume alone says nothing; what is *retained* is the question."
+          runbook: "docs/Alerting.md#jvmheappressure"
+          dashboard: "http://localhost:3000/d/lab-jvm"
+
+      - alert: JvmGcPauseTimeHigh
+        # Time spent collecting, as a fraction of wall clock. 10% is the point
+        # at which throughput loss is measurable rather than theoretical.
+        expr: |
+          sum by (service) (rate(jvm_gc_pause_seconds_sum[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} is spending over 10% of its time in GC"
+          description: "{{ $value | humanizePercentage }} of wall-clock time is GC pause."
+          impact: "Every request pays the pause, so latency rises across the board rather than for one endpoint."
+          action: "Heap panel first - this is usually heap pressure. If the heap is fine, check allocation rate in Profiles."
+          runbook: "docs/Alerting.md#jvmgcpausetimehigh"
+          dashboard: "http://localhost:3000/d/lab-jvm"
+
+  - name: lab-application-business
+    interval: 30s
+    rules:
+
+      - alert: OrdersAcceptedButNotSettled
+        # The business signal with no technical equivalent. Every technical
+        # metric can be green while orders pile up unsettled, because nothing
+        # is failing - the answer simply never comes back.
+        expr: |
+          sum(rate(lab_orders_accepted_total[10m]))
+            - sum(rate(lab_orders_settled_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+          category: application
+        annotations:
+          summary: "Orders are being accepted faster than they are settled"
+          description: "{{ $value | printf \"%.2f\" }} orders/second are accumulating unsettled."
+          impact: "Customers are being told their order is pending, and it stays pending. Nothing is erroring."
+          action: "Kafka consumer lag first, then the outbox backlog, then the Inventory Service's logs."
+          runbook: "docs/Alerting.md#ordersacceptedbutnotsettled"
+          dashboard: "http://localhost:3000/d/lab-business-metrics"
+
+      - alert: OutboxBacklogGrowing
+        # The outbox is meant to drain within seconds. A sustained backlog
+        # means the relay cannot reach Kafka, and every order accepted
+        # meanwhile is one whose stock is never reserved.
+        expr: lab_outbox_pending_events > 50
+        for: 3m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "Outbox backlog on {{ $labels.service }} is not draining"
+          description: "{{ $value }} events are still owed to Kafka."
+          impact: "Orders are accepted but their events are undelivered, so stock is never reserved."
+          action: "Check the broker is reachable from the service, then the relay's logs."
+          runbook: "docs/Alerting.md#outboxbackloggrowing"
+          dashboard: "http://localhost:3000/d/lab-kafka"
+
+      - alert: DeadLetterMessages
+        # Any dead letter is worth a look: by definition it exhausted its
+        # retries, so nothing will pick it up automatically.
+        expr: increase(lab_messages_dead_lettered_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} dead-lettered a message"
+          description: "{{ $value }} message(s) exhausted their retries in the last ten minutes."
+          impact: "Whatever those messages represent has not happened, and nothing will retry it."
+          action: "Inspect dead-letter-topic in Kafka UI. Never replay it blindly - a poison message on a loop is an outage."
+          runbook: "docs/Alerting.md#deadlettermessages"
+          dashboard: "http://localhost:3000/d/lab-kafka"

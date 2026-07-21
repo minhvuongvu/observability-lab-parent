@@ -27,14 +27,24 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 13 | Profiling: Pyroscope agent and server, CPU/alloc/heap/lock profiles | **Complete** |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
 | 15 | Enterprise gRPC communication — proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
-| **16** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
-| 17 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
+| 16 | Alerting: rule categories, routing to email and webhook, exporters, alert guide and matrix | **Complete** |
+| **17** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
+| 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
-> **Numbering note.** gRPC is inserted as step 15; failure simulation and documentation shift to 16
-> and 17. The reason is dependency, not preference: the gRPC chaos scenarios in
-> [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md) belong in the failure-simulation step, so
-> gRPC has to exist first. Building failure simulation twice — once for HTTP, again for gRPC — would
-> be worse than inserting one step.
+> **Numbering note.** Two steps have been inserted since the original plan, and everything after each
+> shifted rather than being dropped.
+>
+> - **gRPC became step 15.** The gRPC chaos scenarios in
+>   [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md) belong in the failure-simulation step, so
+>   gRPC has to exist first. Building failure simulation twice — once for HTTP, again for gRPC — would
+>   be worse than inserting one step.
+> - **Alerting became step 16**, ahead of failure simulation. The order is a dependency, not a
+>   preference: failure simulation exists to prove that a fault produces the signal somebody is
+>   paged by, and that claim is untestable until the alerts and their routing exist. Doing it the
+>   other way round means writing the chaos endpoints, then writing the alerts, then going back to
+>   re-run every scenario.
+>
+> Failure simulation is now step 17 and documentation step 18.
 
 ---
 
@@ -143,6 +153,121 @@ You have understood this step when you can:
 
 ---
 
+## Step 16 — Alerting
+
+> **Built.** The implementation, the full alert matrix and the response for each alert are in
+> [docs/Alerting.md](docs/Alerting.md).
+
+### Why here
+
+Alerting is the first step whose output is aimed at a *person* rather than at a query. Everything
+before it produced signals; this decides which of them are worth waking someone for.
+
+| Depends on | Provides |
+| --- | --- |
+| Step 10 — Logging | The correlation ids an alert annotation has to carry to be actionable |
+| Step 11 — Metrics | The rule engine, the recording rules, and the eleven ad-hoc alerts this step gives a taxonomy to |
+| Step 13 — Profiling | The heap and CPU series the JVM alerts fire on |
+| Step 14 — Dashboards | Every alert must link to the panel that explains it, or it is a dead end |
+| Step 15 — gRPC | The internal hop's saturation signals, which have no HTTP equivalent |
+
+**And why before failure simulation.** Step 17 exists to prove that a real fault produces the signal
+somebody is paged by. That claim is untestable while the alerts and their routing do not exist —
+running it the other way round means writing the chaos endpoints, then the alerts, then re-running
+every scenario to check them.
+
+### What this step has to add first
+
+The current rules only alert on what the *services themselves* export. Four of the required alerts
+have no series to fire on yet, and this is the honest cost of the step:
+
+| Required alert | Needs |
+| --- | --- |
+| High CPU, High Memory, Disk Usage | A node exporter — none of these are JVM metrics |
+| PostgreSQL Down, Oracle Down, Slow Queries | Database exporters. The services' *client-side* view (Hikari) is instrumented; the servers' internals are not |
+| Redis Down, Redis High Latency | A Redis exporter. Lettuce command latency covers the client half only |
+| Kafka Broker Down, Consumer Lag | A Kafka exporter, or JMX scraping on the broker |
+
+[docs/Metrics.md §9](docs/Metrics.md) records the absence of these as a deliberate omission of step
+11. Step 16 is where it stops being deliberate.
+
+**Alert targets require a router.** Email and webhook delivery is Alertmanager's job (or Grafana
+unified alerting's) — neither is in the stack today, and both `docs/Metrics.md` and
+the alert rules currently say so in as many words. Adding one is part of this step, and both of
+those statements become wrong the moment it lands.
+
+### Learning objectives
+
+**What to alert on**
+
+- Alert on **symptoms users feel**, not on causes: "checkout is failing" over "CPU is at 90%"
+- Separate *pages* from *tickets* from *context*, and match the category to the response
+- Write a threshold that means the same thing at 10 rps and at 10 000 rps — ratios, not counts
+- Recognise the alert that fires on data quality rather than service health, and refuse to ship it
+
+**Routing and delivery**
+
+- Route by category and by owning service, so a page reaches whoever can act on it
+- Group, inhibit and silence: one broker failure must not produce forty notifications
+- Understand why an alert with no runbook link is an alert that will be escalated blindly
+
+**Rule mechanics**
+
+- `for:` durations, and why a flapping alert is worse than a missing one
+- Prometheus rules versus Grafana rules — what each can express, and why running both here is a
+  deliberate comparison rather than duplication
+- Alert on the *absence* of a signal (`absent()`, `up == 0`); a dead process reports nothing at all,
+  and a health-based rule simply goes quiet
+
+**Operations**
+
+- Write an alert annotation that says what broke, what it affects, and where to look next
+- Build an alert matrix: signal → threshold → category → owner → first action
+- Measure the alerts themselves: firing rate, time-to-acknowledge, and how many were actionable
+
+### Deliverables
+
+| Artefact | Content |
+| --- | --- |
+| Exporters | Node, PostgreSQL, Oracle, Redis and Kafka — the series the required alerts need |
+| Prometheus rules | Grouped by category (critical / warning / information) and by subsystem |
+| Alertmanager | Routing tree, receivers for email and webhook, grouping and inhibition rules |
+| Grafana alert rules | Contact points, notification policies, and the rules expressed Grafana-side |
+| Alert panels | Firing state and history on the dashboards, per subsystem |
+| `docs/Alerting.md` | The alert guide: philosophy, categories, routing, and how to add or silence one |
+| Alert matrix | Every alert: expression, threshold, category, what it means, first action |
+| Incident response | Per alert, the suggested first three steps and the dashboard that explains it |
+
+### Exercises, in order
+
+1. **Count the current alerts and classify them.** Which are symptoms and which are causes? Which
+   would you actually be woken by at 03:00?
+2. **Break one thing and count the notifications.** Stop Kafka and see how many alerts fire from one
+   fault. That number is the argument for grouping and inhibition.
+3. **Write a bad alert deliberately** — an absolute error count rather than a ratio — then drive
+   traffic up and watch it become meaningless.
+4. **Fire an alert with no `for:`** and watch it flap. Add the duration and watch it settle.
+5. **Kill a service** and confirm `up == 0` fires while every health-based rule stays silent.
+6. **Route a critical and a warning to different receivers**, and verify the webhook payload contains
+   enough to act on without opening Grafana.
+7. **Write the runbook link into the annotation**, then hand the alert to somebody who has not read
+   this repository and see whether they can act on it.
+
+Exercises 2 and 3 are the valuable ones: both produce an alert channel that is technically correct
+and operationally useless.
+
+### Assessment
+
+You have understood this step when you can:
+
+- Justify every alert from the user-visible symptom it represents
+- Explain why `NOT_FOUND`, a rejected order and an insufficient-stock refusal must never page anyone
+- Say which alerts fire on the *absence* of data, and why they cannot be health-based
+- Describe what happens to forty simultaneous alerts caused by one root failure
+- Point at an alert in the matrix and state its first response action from memory
+
+---
+
 ## What each step teaches
 
 | Step | Core concept | Signature lesson |
@@ -159,8 +284,9 @@ You have understood this step when you can:
 | 13 | Continuous profiling | `itimer` over `cpu`; allocation vs live heap |
 | 14 | Dashboards | Verify every query returns data; a healthy system renders zero, not "No data" |
 | **15** | **gRPC** | **Protocol choice follows coupling; some failures are invisible to all four signals** |
-| 16 | Failure simulation | A resilience mechanism never observed working is an assumption |
-| 17 | Documentation | Explain *why*; a decision without a rationale is folklore |
+| 16 | Alerting | Alert on symptoms a person would act on; an ignored channel is worse than none |
+| 17 | Failure simulation | A resilience mechanism never observed working is an assumption |
+| 18 | Documentation | Explain *why*; a decision without a rationale is folklore |
 
 ---
 

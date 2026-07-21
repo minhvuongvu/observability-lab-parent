@@ -1,0 +1,161 @@
+# ---------------------------------------------------------------------------
+# Infrastructure alerts: the machine, and whether the processes on it answer.
+#
+# Every rule in this repository carries the same label set, because the routing
+# tree and the inhibition rules in alertmanager.yml match on it:
+#
+#   severity   critical | warning | info
+#   category   infrastructure | application | database | messaging | cache
+#
+# and the same annotations, because a notification that omits them costs
+# somebody else's time to interpret:
+#
+#   summary    one line, what fired
+#   description what the numbers actually are
+#   impact     what a user or another service feels
+#   action     the first thing to do
+#   runbook    where the detail is
+#   dashboard  the panel that explains it
+#
+# On severity. A CPU alert is a warning, not a page: high CPU with healthy
+# latency is a machine being used, which is what it is for. What pages is the
+# thing users feel - and that lives in alerts-application.yml.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-infrastructure-availability
+    interval: 30s
+    rules:
+
+      - alert: ServiceDown
+        # `up` is synthesised by Prometheus per scrape, so this fires when a
+        # service stops answering rather than when it reports being unwell.
+        # That distinction matters: a process that has died reports nothing at
+        # all, and a health-based alert would simply go quiet - which is
+        # indistinguishable from healthy.
+        expr: up{job="observability-lab-services"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "{{ $labels.service }} is not answering scrapes"
+          description: "No successful scrape of {{ $labels.instance }} for a minute."
+          impact: "Every request routed to this instance fails."
+          action: "Check the process is alive, then its logs for a startup or OOM failure."
+          runbook: "docs/Alerting.md#servicedown"
+          dashboard: "http://localhost:3000/d/lab-platform-overview"
+
+      - alert: ExporterDown
+        # An exporter that stops scraping does not raise its own alerts - it
+        # makes every alert built on its metrics permanently impossible. That
+        # silence looks exactly like health, which is why this rule exists.
+        expr: up{job=~".*-exporter|node|kafka|redis|postgres|oracle"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "The {{ $labels.job }} exporter is down"
+          description: "{{ $labels.instance }} has not been scraped for two minutes."
+          impact: "Alerts that depend on this exporter cannot fire. Absence of alerts is not health."
+          action: "Restart the exporter, then confirm its target is UP in Prometheus."
+          runbook: "docs/Alerting.md#exporterdown"
+          dashboard: "http://localhost:9090/targets"
+
+      - alert: ServiceRestarted
+        # Informational by design: it is not a problem, it is the context that
+        # answers "was anything unusual happening at 14:05?" three hours later.
+        expr: process_uptime_seconds{job="observability-lab-services"} < 300
+        for: 0m
+        labels:
+          severity: info
+          category: infrastructure
+        annotations:
+          summary: "{{ $labels.service }} restarted"
+          description: "Uptime is {{ $value | humanizeDuration }}."
+          impact: "In-flight requests were lost, and caches and connection pools are cold."
+          action: "None, if the restart was intended. If it was not, check for an OOM kill."
+          runbook: "docs/Alerting.md#servicerestarted"
+          dashboard: "http://localhost:3000/d/lab-jvm"
+
+  - name: lab-infrastructure-resources
+    interval: 30s
+    rules:
+
+      - alert: HighCpuUsage
+        # Averaged across cores and measured as "not idle", which is the only
+        # form that is comparable between a 2-core and a 16-core host.
+        expr: |
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "CPU on {{ $labels.instance }} is above 85%"
+          description: "{{ $value | printf \"%.1f\" }}% for ten minutes."
+          impact: "None on its own. Sustained saturation shows up as latency before it shows up as errors."
+          action: "Check whether request latency moved with it. If it did not, this is capacity in use, not a fault."
+          runbook: "docs/Alerting.md#highcpuusage"
+          dashboard: "http://localhost:3000/d/lab-alerting"
+
+      - alert: HighMemoryUsage
+        # MemAvailable, not MemFree. Free memory on a healthy Linux host is
+        # near zero because the page cache uses the rest, so an alert on
+        # MemFree fires permanently and teaches everyone to ignore it.
+        expr: |
+          (1 - node_memory_MemAvailable_bytes / clamp_min(node_memory_MemTotal_bytes, 1)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "Memory on {{ $labels.instance }} is above 90%"
+          description: "{{ $value | printf \"%.1f\" }}% of memory is unavailable."
+          impact: "The OOM killer becomes a possibility; the JVM is usually its largest target."
+          action: "Check container memory limits, then the JVM heap panel for the service that grew."
+          runbook: "docs/Alerting.md#highmemoryusage"
+          dashboard: "http://localhost:3000/d/lab-jvm"
+
+      - alert: DiskSpaceFilling
+        # Two thresholds for one resource, which is the point: 80% is a ticket,
+        # 90% is a page. Disk is the one resource where the difference between
+        # "soon" and "now" is worth two separate rules.
+        #
+        # The fstype exclusions duplicate what node-exporter is already
+        # configured to drop. That is deliberate belt-and-braces: a read-only
+        # iso9660 image is 100% full by definition, so if either filter is ever
+        # relaxed this rule fires forever and takes the alert channel's
+        # credibility with it.
+        expr: |
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|iso9660|9p"}
+             / clamp_min(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|iso9660|9p"}, 1)) * 100 > 80
+        for: 15m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+          description: "Filesystem {{ $labels.device }} mounted at {{ $labels.mountpoint }}."
+          impact: "Nothing yet. Prometheus, Loki and the databases all fail hard rather than degrade when a disk fills."
+          action: "Prune Docker volumes and old log files: ./scripts/infra.sh destroy resets lab state entirely."
+          runbook: "docs/Alerting.md#diskspacefilling"
+          dashboard: "http://localhost:3000/d/lab-alerting"
+
+      - alert: DiskSpaceCritical
+        expr: |
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|iso9660|9p"}
+             / clamp_min(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|iso9660|9p"}, 1)) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+          description: "Less than 10% remains on {{ $labels.device }}."
+          impact: "PostgreSQL and Oracle stop accepting writes when they cannot extend a datafile. Kafka stops accepting produces."
+          action: "Free space now. Start with docker system prune and the logs/ directory."
+          runbook: "docs/Alerting.md#diskspacecritical"
+          dashboard: "http://localhost:3000/d/lab-alerting"

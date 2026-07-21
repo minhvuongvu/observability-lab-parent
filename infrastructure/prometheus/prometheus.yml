@@ -26,6 +26,24 @@ global:
 rule_files:
   - /etc/prometheus/rules/*.yml
 
+# ---------------------------------------------------------------------------
+# Where a firing rule goes.
+#
+# Prometheus decides *that* something is wrong and then hands it over. It has
+# no concept of severity routing, grouping, inhibition or silences - all four
+# live in Alertmanager, which is why the two are separate processes rather than
+# one. Without this block the rules above evaluate correctly and notify nobody,
+# which is what step 11 shipped and step 16 fixes.
+# ---------------------------------------------------------------------------
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+      # Every alert leaving this server is stamped with the external_labels
+      # above, so Alertmanager can tell two Prometheus servers apart once there
+      # is more than one.
+      timeout: 10s
+
 scrape_configs:
 
   # -------------------------------------------------------------------------
@@ -83,9 +101,53 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   # -------------------------------------------------------------------------
-  # Infrastructure that speaks Prometheus natively. No exporter needed for
-  # these; the ones that would need an exporter (PostgreSQL, Oracle, Redis)
-  # are deliberately left for a later step rather than half-added here.
+  # Alertmanager. Scraped for the same reason Prometheus scrapes itself: the
+  # component that delivers the alerts is a component that can fail, and its
+  # failure is silent by nature - nothing is delivered, and nothing says so.
+  # -------------------------------------------------------------------------
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  # -------------------------------------------------------------------------
+  # Exporters (step 16).
+  #
+  # Each of these is a narrow bridge between the observability network and a
+  # datastore, holding a read-only credential scoped to statistics. They exist
+  # because four categories of required alert - host resources, both databases,
+  # Redis and Kafka - have no series to fire on otherwise: the services export
+  # only their own *client-side* view of each dependency.
+  #
+  # The `job` label is what the ExporterDown alert matches on, so these names
+  # are part of the alerting contract rather than free-form.
+  # -------------------------------------------------------------------------
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: oracle
+    # Oracle answers more slowly than the rest and the custom metrics query V$
+    # views on every scrape. A tighter interval would make the exporter part of
+    # the load it is measuring.
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    static_configs:
+      - targets: ["oracle-exporter:9161"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+
+  # -------------------------------------------------------------------------
+  # Infrastructure that speaks Prometheus natively - no exporter needed.
   # -------------------------------------------------------------------------
   - job_name: victoriametrics
     static_configs:

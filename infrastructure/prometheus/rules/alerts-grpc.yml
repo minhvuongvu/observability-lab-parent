@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# gRPC alerts: the internal Order -> Inventory hop.
+#
+# Introduced with step 15 and re-labelled here into the taxonomy the routing
+# tree matches on. Each of these describes a failure the HTTP alerts cannot
+# see, which is the reason a second protocol earns a second set of rules
+# rather than being folded into the first.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-grpc
+    interval: 30s
+    rules:
+
+      - alert: GrpcHighFaultRate
+        # A ratio, built only from genuine faults. clamp_min keeps a service
+        # with no traffic from dividing by zero and firing on nothing.
+        expr: |
+          lab:grpc_fault_rate:5m
+            / clamp_min(lab:grpc_request_rate:5m, 0.001) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          category: application
+        annotations:
+          summary: "{{ $labels.grpc_service }} is faulting on more than 1% of calls"
+          description: "{{ $value | humanizePercentage }} of RPCs returned INTERNAL, UNKNOWN, DATA_LOSS or UNAVAILABLE."
+          impact: "The Order Service falls back to degraded answers, and express reservations stop settling."
+          action: "gRPC dashboard -> status distribution. A business status miscategorised as a fault is the usual cause."
+          runbook: "docs/Alerting.md#grpchighfaultrate"
+          dashboard: "http://localhost:3000/d/lab-grpc"
+
+      - alert: GrpcDeadlineExceededRising
+        # The caller gave up. Either this service got slower or the deadline is
+        # too tight - and the gap between the client and server duration panels
+        # is what says which.
+        expr: |
+          sum by (service, grpc_method) (rate(grpc_server_requests_total{
+            grpc_status="DEADLINE_EXCEEDED"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.grpc_method }} is exceeding its callers' deadlines"
+          description: "{{ $value | printf \"%.2f\" }} calls/second are timing out."
+          impact: "Availability checks degrade to unknown; express reservations fall through to the Kafka path."
+          action: "Compare the client and server duration panels. A large gap is the channel, a small one is the handler."
+          runbook: "docs/Alerting.md#grpcdeadlineexceededrising"
+          dashboard: "http://localhost:3000/d/lab-grpc"
+
+      - alert: GrpcExecutorSaturated
+        # The failure with no other symptom: calls are slow, CPU is low, heap
+        # is healthy and Tomcat's thread pool is empty - because the queue is
+        # in front of a pool nothing else measures.
+        expr: lab:grpc_executor_used_ratio > 0.9
+        for: 3m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }}'s gRPC handler pool is saturated"
+          description: "{{ $value | humanizePercentage }} of the gRPC executor's threads are busy."
+          impact: "RPCs queue while every other saturation signal looks healthy. This is the one that explains it."
+          action: "gRPC dashboard -> executor pool. Then find what the handlers are blocked on - Oracle, usually."
+          runbook: "docs/Alerting.md#grpcexecutorsaturated"
+          dashboard: "http://localhost:3000/d/lab-grpc"
+
+      - alert: GrpcChannelNotReady
+        # A client that cannot reach the provider at all, visible before any
+        # user notices. Also the first thing to check when the caller reports
+        # UNAVAILABLE while the callee's own dashboards are green.
+        expr: grpc_client_channel_state{state="TRANSIENT_FAILURE"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} cannot reach {{ $labels.target }} over gRPC"
+          description: "The channel has been in TRANSIENT_FAILURE for two minutes."
+          impact: "Every synchronous call to that target fails fast and falls back."
+          action: "Consul catalog: are the instances passing, and do they advertise grpc-port?"
+          runbook: "docs/Alerting.md#grpcchannelnotready"
+          dashboard: "http://localhost:3000/d/lab-grpc"
+
+      - alert: GrpcCircuitBreakerOpen
+        # A breaker that opens silently is worse than none: the dependency
+        # stops being called and nothing says why.
+        expr: resilience4j_circuitbreaker_state{state="open"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: "{{ $labels.service }} has opened the circuit to {{ $labels.name }}"
+          description: "The breaker is open; the dependency is not being contacted at all."
+          impact: "Fallbacks are in use. Availability answers are degraded and reservations defer to Kafka."
+          action: "Find why it tripped: failure rate or slow-call rate. Business statuses must never open it."
+          runbook: "docs/Alerting.md#grpccircuitbreakeropen"
+          dashboard: "http://localhost:3000/d/lab-grpc"

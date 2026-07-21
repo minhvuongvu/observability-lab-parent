@@ -15,30 +15,32 @@ Directories marked `[step nn]` arrive with the step that needs them.
 ```
 infrastructure/
 ├── nginx/                  nginx.conf + conf.d: JSON access log, /healthz, upstreams [step 06]
-├── kong/                   kong.yml: DB-less declarative config; routes and plugins [step 06]
+├── kong/                   kong.yml: DB-less declarative config; routes and plugins  [step 06]
 ├── keycloak/               realm export: clients, roles, users                       [step 07]
 ├── consul/                 config/server.hcl; KV seed                                [step 08]
-├── postgres/               init/: per-application databases and owning roles
-├── oracle/                 init/: tablespace quota and schema privileges
+├── postgres/               init/: application databases, owning roles, monitor role
+├── oracle/                 init/: tablespace quota, schema privileges, monitor user
+│                           exporter-metrics.toml: custom V$ metrics                  [step 16]
 ├── kafka/                  init/: topic declarations with retention and partitions
 ├── redis/                  redis.conf: eviction policy, persistence, slowlog
 ├── minio/                  init/: bucket, versioning, least-privilege user
-└── observability/                                                              [step 10-13]
-    ├── otel-collector/     receivers, processors and the fan-out to every backend
-    ├── prometheus/         scrape configuration and recording rules
-    ├── victoriametrics/    long-term metric storage settings
-    ├── grafana/            provisioned datasources and dashboards
-    ├── loki/               log store configuration
-    ├── tempo/              trace store configuration
-    ├── jaeger/             trace UI and storage configuration
-    ├── zipkin/             trace UI configuration
-    ├── pyroscope/          continuous profiling server configuration
-    ├── fluent-bit/         log shipping to the collector
-    ├── fluentd/            log shipping to OpenSearch
-    ├── promtail/           log shipping straight to Loki
-    ├── opensearch/         log index settings
-    └── elasticsearch/      log index settings
+│
+│                           ── observability ──                              [steps 10-16]
+├── otel-collector/         receivers, processors and the fan-out to every backend
+├── prometheus/             prometheus.yml, and rules/ split one file per subsystem
+├── alertmanager/           routing tree, receivers, inhibition; templates/            [step 16]
+├── grafana/                provisioned datasources, dashboards and alerting/
+├── loki/                   log store configuration
+├── tempo/                  trace store configuration
+├── pyroscope/              continuous profiling server configuration
+├── fluent-bit/             log shipping to the collector
+├── fluentd/                log shipping to OpenSearch
+└── promtail/               log shipping straight to Loki
 ```
+
+The observability components sit at the top level rather than nested under an `observability/`
+parent: Compose names each container after its directory, and one level of nesting for a grouping
+that only exists in prose would break that correspondence.
 
 ## Rules for anything added here
 
@@ -59,9 +61,18 @@ tooling allows it, and they read every credential from the environment.
 
 Re-running them means deleting the volume: `../scripts/infra.sh destroy`.
 
+**This bites when a step adds one.** Step 16 added the read-only monitoring roles the database
+exporters use; on a stack whose volumes already existed, those roles are simply absent and the
+exporter reports the database as down. The symptom points at the database, and the cause is that an
+init script never ran. [docs/Alerting.md §7](../docs/Alerting.md) has the statements to create them
+by hand.
+
 ## Status
 
-As of **step 02**, the six configuration and init directories above are populated and the stack comes
-up healthy. Gateway routing, the Keycloak realm, Consul KV and the observability configuration arrive
-with the steps marked in the layout — see the roadmap in the [root README](../README.md), and
-[docs/Infrastructure.md](../docs/Infrastructure.md) for how the stack is operated.
+As of **step 16**, every directory above is populated and the stack comes up healthy: the data plane,
+the edge, identity and discovery, the four telemetry pipelines, and the alerting chain that turns a
+firing rule into a notification somebody receives.
+
+See the roadmap in the [root README](../README.md), [docs/Infrastructure.md](../docs/Infrastructure.md)
+for how the stack is operated, and [docs/Alerting.md](../docs/Alerting.md) for what fires and where
+it goes.

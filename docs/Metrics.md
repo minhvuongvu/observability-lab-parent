@@ -135,9 +135,12 @@ panel can be pointed at either and compared on identical input — which is the 
 
 ## 6. Rules
 
-[`lab-alerts.yml`](../infrastructure/prometheus/rules/lab-alerts.yml) holds three recording rules and
-six alerts. Deliberately few: a rule that fires on something nobody would act on trains people to
-ignore the channel, and an ignored alert channel is worse than none.
+This step shipped three recording rules and six alerts in one file. Step 16 restructured them into
+[`infrastructure/prometheus/rules/`](../infrastructure/prometheus/rules/) — one file per subsystem,
+now ten recording rules and thirty-three alerts, each carrying a severity and a category so it can
+be routed. The principle did not change: a rule that fires on something nobody would act on trains
+people to ignore the channel, and an ignored alert channel is worse than none. See
+[Alerting.md](Alerting.md) for the full matrix.
 
 The one worth singling out:
 
@@ -150,8 +153,9 @@ fires** — nothing is failing, the answer simply never comes back. That is the 
 exist for, and the reason `lab_orders_accepted_total` and `lab_orders_settled_total` are separate
 counters rather than one with a status tag.
 
-There is no Alertmanager. These evaluate and show as firing in Prometheus and Grafana, which is
-enough to see the mechanics without adding a routing and paging component this step does not call for.
+At this step there was no Alertmanager: rules evaluated, showed as firing in Prometheus and
+Grafana, and notified nobody. **Step 16 added the routing** — severities, grouping, inhibition and
+delivery to email and webhook. See [Alerting.md](Alerting.md).
 
 ---
 
@@ -201,11 +205,13 @@ curl -s http://localhost:9090/api/v1/rules | python3 -m json.tool | grep '"name"
 
 - **No exporters for PostgreSQL, Oracle or Redis themselves.** The services' *client-side* view of
   each is instrumented; the servers' internals need a sidecar exporter apiece, which is infrastructure
-  work rather than the application metrics this step is about.
+  work rather than the application metrics this step is about. **Step 16 added them** —
+  node, postgres, oracledb, redis and kafka — because "PostgreSQL Down" and "Redis High Latency"
+  cannot be alerted on without them.
 - **Kong is not scraped.** Its admin port serves no Prometheus endpoint unless the `prometheus` plugin
   is enabled, and it sits on the edge network rather than the observability one — so it needs both a
   gateway change and a network change. Better as a revision of step 06 than as a job that shows up
   permanently down here.
-- **No Alertmanager**, as above.
+- **No Alertmanager**, as above — added by step 16.
 - **No exemplars.** Linking a latency bucket to the trace that produced it needs trace ids in the
   metric, which arrives with step 12.

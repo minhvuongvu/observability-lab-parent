@@ -1,0 +1,90 @@
+# ---------------------------------------------------------------------------
+# Recording rules: precomputed answers to questions the dashboards and the
+# alerts ask constantly. Evaluating them once here is cheaper than every panel
+# and every rule doing the same aggregation on every cycle.
+#
+# Naming follows the Prometheus convention `level:metric:operation`, so a rule
+# is recognisable as derived rather than scraped without having to look it up.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-recording-http
+    interval: 30s
+    rules:
+      - record: lab:http_request_rate:5m
+        expr: sum by (service) (rate(http_server_requests_seconds_count[5m]))
+
+      # Everything the caller did not get a 2xx for. Useful on a dashboard,
+      # and deliberately NOT what the paging alert is built on - see below.
+      - record: lab:http_error_rate:5m
+        expr: |
+          sum by (service) (rate(http_server_requests_seconds_count{outcome=~"SERVER_ERROR|CLIENT_ERROR"}[5m]))
+
+      # Faults only: 5xx, the responses this system is responsible for.
+      #
+      # The distinction matters because it decides who gets woken. A client
+      # hammering an endpoint with malformed requests drives CLIENT_ERROR
+      # through the roof while the service is behaving perfectly - and an alert
+      # that pages the service team for somebody else's bug is one they learn
+      # to mute. Same principle as the gRPC fault rate below.
+      - record: lab:http_fault_rate:5m
+        expr: |
+          sum by (service) (rate(http_server_requests_seconds_count{outcome="SERVER_ERROR"}[5m]))
+
+      # The 99th percentile computed from bucket counts, which is the only form
+      # that aggregates correctly across instances.
+      - record: lab:http_latency_p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[5m])))
+
+  - name: lab-recording-grpc
+    interval: 30s
+    rules:
+      # The gRPC hop, in the same shape as the HTTP one so the two are directly
+      # comparable rather than expressed in two different vocabularies.
+      - record: lab:grpc_request_rate:5m
+        expr: sum by (service, grpc_service) (rate(grpc_server_requests_total[5m]))
+
+      # Faults, NOT non-OK. NOT_FOUND for an untracked SKU and
+      # FAILED_PRECONDITION for a shortage are answers, and counting them here
+      # would make the error rate track catalogue quality instead of service
+      # health - producing an alert people learn to mute.
+      - record: lab:grpc_fault_rate:5m
+        expr: |
+          sum by (service, grpc_service) (rate(grpc_server_requests_total{
+            grpc_status=~"INTERNAL|UNKNOWN|DATA_LOSS|UNAVAILABLE"}[5m]))
+
+      - record: lab:grpc_latency_p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, grpc_method, le) (
+              rate(grpc_server_request_duration_seconds_bucket[5m])))
+
+  - name: lab-recording-resources
+    interval: 30s
+    rules:
+      # Heap as a fraction of the maximum, per service. Summed across pools
+      # because "is the heap full" is a question about the heap, not about Eden
+      # and Old separately - and a per-pool ratio is misleading, since a full
+      # Eden is what a healthy collector looks like.
+      - record: lab:jvm_heap_used_ratio
+        expr: |
+          sum by (service) (jvm_memory_used_bytes{area="heap"})
+            / clamp_min(sum by (service) (jvm_memory_max_bytes{area="heap"}), 1)
+
+      # Tomcat's request threads. Requires server.tomcat.mbeanregistry.enabled,
+      # which the services set - without it these series do not exist at all
+      # and this rule silently records nothing.
+      - record: lab:tomcat_thread_used_ratio
+        expr: |
+          sum by (service) (tomcat_threads_busy_threads)
+            / clamp_min(sum by (service) (tomcat_threads_config_max_threads), 1)
+
+      # The gRPC handler pool, which is a different pool from Tomcat's and is
+      # the one nothing else measures.
+      - record: lab:grpc_executor_used_ratio
+        expr: |
+          sum by (service) (executor_active_threads{name="grpc-executor"})
+            / clamp_min(sum by (service) (executor_pool_max_threads{name="grpc-executor"}), 1)

@@ -274,4 +274,5 @@ curl -s http://localhost:3100/loki/api/v1/labels
   through it; the collector is introduced with tracing, and adding a half-configured one here would
   mean touching it twice.
 - **No log-based alerts.** Loki's ruler is configured but has no rules; alerting belongs with the
-  metrics step, where there is something to compare a log rate against.
+  metrics step, where there is something to compare a log rate against — and its routing with
+  step 16, where alerts acquire categories and somewhere to be delivered.

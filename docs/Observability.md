@@ -90,9 +90,14 @@ you know which thing is unhappy.
 | data | **Databases — Connection Pools** | "The site is slow" — check pool saturation first. |
 | data | **Redis — Cache and Commands** | Hit ratio collapsed, or the cache got slower than the database. |
 | messaging | **Kafka — Producers, Consumers, Lag** | The asynchronous half is behind. |
+| alerting | **Alerting — Firing, Routing and Delivery** | Something fired, or you want to know whether the notifications are actually being delivered. See [Alerting.md](Alerting.md). |
 | grpc | **gRPC — Service Communication** | The internal synchronous hop: RED, the client/server duration gap, and the handler-pool saturation nothing else measures. See [Grpc.md](Grpc.md). |
 | metrics | **Business — Order Flow** | Everything technical is green but orders are not settling. |
-| logs | **Logs — Overview** | You have a correlation id, or want error volume by service. |
+
+There is deliberately **no logs dashboard**. Log exploration is an Explore-tab activity — you
+arrive with a `trace_id` or a `correlation_id` and follow it — and a fixed panel of "recent errors"
+is a worse version of that. The log-derived *alerts* are in
+[Alerting.md](Alerting.md); the log-derived *counts* are on the Alerting dashboard.
 | traces | **Traces — Span Metrics and Service Graph** | Which span is slow, and who calls whom. |
 | profiles | **Profiles — CPU, Allocation, Locks** | You know the method is slow and need to know why. |
 
@@ -153,6 +158,8 @@ someone's browser is lost the next time the volume is recreated.
 | Jaeger | <http://localhost:16686> |
 | Zipkin | <http://localhost:9411> |
 | Pyroscope | <http://localhost:4040> |
+| Alertmanager | <http://localhost:9093> |
+| **Mailpit** (delivered alert email) | <http://localhost:8025> |
 
 The heavy search stack (OpenSearch, Elasticsearch and their dashboards) is opt-in, because it needs
 roughly 4 GB that a machine already running Oracle and Kafka does not have spare:
@@ -170,8 +177,8 @@ docker compose --profile search up -d
 - **The edge is not observed.** Kong and Nginx produce neither metrics nor spans here, so every
   dashboard's view starts at the service. That needs the Kong OpenTelemetry and Prometheus plugins —
   a revision of step 06 rather than something to bolt on.
-- **No Alertmanager.** Rules evaluate and show as firing in Prometheus and Grafana; routing and
-  paging are a component the lab does not currently need.
+- **The edge is still not alerted on.** Kong and Nginx produce no metrics here, so no rule can
+  watch them. That needs the scrape configuration a revision of step 06 would add.
 - **The flame graphs are boring.** The business logic is deliberately trivial, so profiles are
-  dominated by framework startup and idle poll loops. Step 16's failure-simulation endpoints are what
+  dominated by framework startup and idle poll loops. Step 17's failure-simulation endpoints are what
   give all four signals something worth looking at.

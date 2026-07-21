@@ -164,6 +164,6 @@ the method.
   own UI, which is where that comparison actually belongs; a Grafana panel would be a worse version of
   it.
 - **Nothing yet burns interesting CPU.** The flame graphs are dominated by framework startup and idle
-  poll loops, because the business logic is deliberately trivial. Step 16's failure-simulation
+  poll loops, because the business logic is deliberately trivial. Step 17's failure-simulation
   endpoints — CPU spike, memory leak, lock contention — are what give these profiles something worth
   looking at, and they were written with this step in mind.

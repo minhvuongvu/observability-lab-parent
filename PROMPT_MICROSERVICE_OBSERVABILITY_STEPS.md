@@ -549,6 +549,79 @@ Stop.
 
 # STEP 16
 
+## Alerting
+
+### Goal
+
+Configure production-style alerting.
+
+Generate
+
+Prometheus Alert Rules
+
+Grafana Alert Rules
+
+Alert Categories
+
+- Critical
+- Warning
+- Information
+
+Alert Targets
+
+- Email
+- Webhook
+
+Generate alerts for
+
+Infrastructure
+
+- High CPU
+- High Memory
+- Disk Usage
+- Service Down
+
+Application
+
+- High Error Rate
+- High Latency
+- Thread Exhaustion
+- Heap Usage
+
+Kafka
+
+- Consumer Lag
+- Broker Down
+
+Redis
+
+- High Latency
+- Redis Down
+
+Databases
+
+- PostgreSQL Down
+- Oracle Down
+- Slow Queries
+
+Generate Grafana alert panels.
+
+---
+
+## Documentation
+
+Generate
+
+- Alert Guide
+- Alert Matrix
+- Incident Response Suggestions
+
+Stop.
+
+---
+
+# STEP 17
+
 ## Production Failure Simulation
 
 Create endpoints for
@@ -587,7 +660,7 @@ Stop.
 
 ---
 
-# STEP 17
+# STEP 18
 
 ## Documentation
 

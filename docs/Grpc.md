@@ -51,7 +51,7 @@ impossible here.
 | --- | --- |
 | The version is a directory *and* a package (`inventory/v1` ↔ `inventory.v1`) | The file layout |
 | Java package distinct from the proto package | `option java_package` |
-| Field numbers are permanent; enums are append-only | Review, and `buf breaking` in CI (step 17) |
+| Field numbers are permanent; enums are append-only | Review, and `buf breaking` in CI (step 18) |
 | Consumers must handle unknown enum values | `default ->` arms in `InventoryGrpcClient` |
 
 The last row is worth its own line. A `switch` over a proto enum without a `default` compiles cleanly
@@ -386,11 +386,12 @@ not before. A deprecation you cannot measure is one that never ends.
 
 ### 6.6 Alerts
 
-Five, in [`lab-alerts.yml`](../infrastructure/prometheus/rules/lab-alerts.yml): `GrpcHighFaultRate`,
+Five, in [`alerts-grpc.yml`](../infrastructure/prometheus/rules/alerts-grpc.yml): `GrpcHighFaultRate`,
 `GrpcDeadlineExceededRising`, `GrpcExecutorSaturated`, `GrpcChannelNotReady` and
 `GrpcCircuitBreakerOpen`. The fault-rate alert counts faults only — `NOT_FOUND` and
 `FAILED_PRECONDITION` are excluded, or the alert would track catalogue quality instead of service
-health and become something people mute.
+health and become something people mute. Step 16 gave all five a severity, a category and a
+first-response note, and routed them — see [Alerting.md](Alerting.md).
 
 ---
 
@@ -477,7 +478,7 @@ control.
 | `UNKNOWN` from any call | The exception mapping | Every `UNKNOWN` is a gap in `GrpcStatusMapper`, not a category of failure |
 
 Each of these has a matching chaos scenario in
-[GRPC_FAILURE_SIMULATION.md](../GRPC_FAILURE_SIMULATION.md), which step 16 implements. Observability
+[GRPC_FAILURE_SIMULATION.md](../GRPC_FAILURE_SIMULATION.md), which step 17 implements. Observability
 that has never been tested against a real failure is a guess.
 
 ---

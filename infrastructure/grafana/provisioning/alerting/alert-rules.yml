@@ -1,0 +1,170 @@
+# ---------------------------------------------------------------------------
+# Grafana alert rules.
+#
+# These are NOT copies of the Prometheus rules. Running the same expression in
+# two engines would double every notification and make "did this fire?" a
+# question with two answers, so the two engines are given different jobs:
+#
+#   Prometheus  every metric-based rule, evaluated where the metrics live,
+#               routed by Alertmanager.
+#   Grafana     everything that queries something Prometheus cannot reach.
+#
+# In practice that means logs. Prometheus cannot query Loki, so a rule about
+# log content has nowhere else to live - and log-based rules cover a class of
+# failure metrics genuinely miss: an exception that is caught, logged and
+# returns a 200 is invisible to every counter in the system.
+#
+# Each rule is A (query) -> B (reduce to one number) -> C (threshold), which is
+# Grafana's model. The condition names C because that is the expression whose
+# truth decides whether the rule fires.
+# ---------------------------------------------------------------------------
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: lab-logs
+    folder: Alerts
+    # Slower than the Prometheus groups: a Loki range query is far more
+    # expensive than reading a counter, and nothing here needs 15s resolution.
+    interval: 1m
+    rules:
+
+      # -------------------------------------------------------------------
+      # Errors are being logged at a rate the metrics may not show.
+      #
+      # `level` is a Loki label (Promtail extracts it from the JSON), so this
+      # is a label match rather than a line filter - orders of magnitude
+      # cheaper, and the reason the log schema puts level in a label at all.
+      # -------------------------------------------------------------------
+      - uid: lab-log-error-rate
+        title: LogErrorRateHigh
+        condition: C
+        for: 5m
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: loki
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              expr: 'sum by (service) (rate({pipeline="promtail", level="ERROR"}[5m]))'
+              queryType: range
+          - refId: B
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.5]
+        # No ERROR lines is the normal state of a healthy idle lab, and Loki
+        # returns no series rather than a zero. Treating that as OK is correct
+        # here - and is exactly the decision the rule below inverts.
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+          category: application
+        annotations:
+          summary: 'ERROR log lines from {{ $labels.service }} exceed 0.5/s'
+          description: 'Sustained for five minutes. The HTTP fault rate may still be within threshold.'
+          impact: 'Something is failing repeatedly. A caught-and-logged exception that returns 200 is invisible to every counter.'
+          action: 'Explore -> Loki: {service="...", level="ERROR"}, group by logger. Then follow one trace_id into Tempo.'
+          runbook: 'docs/Alerting.md#logerrorratehigh'
+          dashboard: 'http://localhost:3000/explore'
+
+      # -------------------------------------------------------------------
+      # The log pipeline itself has stopped.
+      #
+      # This is the alert that exists *because* of NoData, not in spite of it.
+      # If Promtail dies, or the services stop writing, Loki returns nothing —
+      # and every log-based rule above it silently becomes un-fireable. Nothing
+      # else in the system notices, because an absent signal looks exactly like
+      # a healthy one.
+      #
+      # noDataState: Alerting is the whole rule. Getting that field wrong makes
+      # this a rule that can never fire, which is worse than not having it.
+      # -------------------------------------------------------------------
+      - uid: lab-log-pipeline-silent
+        title: LogPipelineSilent
+        condition: C
+        for: 10m
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              refId: A
+              datasource:
+                type: loki
+                uid: loki
+              expr: 'sum(count_over_time({pipeline="promtail"}[10m]))'
+              queryType: range
+          - refId: B
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+        noDataState: Alerting
+        execErrState: Alerting
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: 'No log lines have reached Loki for ten minutes'
+          description: 'Either the services are idle, or the log pipeline has broken.'
+          impact: 'Every log-based alert is now unable to fire, and an investigation has nothing to read.'
+          action: 'Is anything serving traffic? If yes, check Promtail is running and that logs/ is being written and mounted.'
+          runbook: 'docs/Alerting.md#logpipelinesilent'
+          dashboard: 'http://localhost:3000/explore'

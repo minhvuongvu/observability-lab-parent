@@ -698,6 +698,133 @@ grpc = dashboard(
     ])
 
 # ---------------------------------------------------------------------------
+# 6c. Alerting - what is firing, and whether anybody was actually told.
+#
+# The second half of that sentence is the part most alerting dashboards omit.
+# A rule that fires and a notification that is delivered are two different
+# events, and the gap between them is silent: Alertmanager can be failing every
+# send while Prometheus shows a healthy, firing alert. So the delivery panels
+# here are not decoration - they are the only thing that says the chain works.
+# ---------------------------------------------------------------------------
+FIRING = 'ALERTS{alertstate="firing"}'
+
+alerting = dashboard(
+    "lab-alerting", "Alerting — Firing, Routing and Delivery",
+    "What is firing now, what fired recently, and whether the notifications actually left the "
+    "building. Severity drives routing: critical pages, warning tickets, info is context. "
+    "See docs/Alerting.md for the matrix and the first response to each alert.",
+    ["alerting"],
+    [
+        row(100, "What is firing now", 0),
+        stat(1, "Critical", f'count({FIRING[:-1]},severity="critical"}}) or vector(0)',
+             0, 1, unit="short",
+             desc="Somebody is expected to be acting on each of these right now. A non-zero value "
+                  "here that nobody is working is a severity that was set too high.",
+             steps=[(GREEN, None), (RED, 1)]),
+        stat(2, "Warning", f'count({FIRING[:-1]},severity="warning"}}) or vector(0)',
+             6, 1, unit="short",
+             desc="A ticket today, not a phone call tonight.",
+             steps=[(GREEN, None), (ORANGE, 1)]),
+        stat(3, "Information", f'count({FIRING[:-1]},severity="info"}}) or vector(0)',
+             12, 1, unit="short",
+             desc="Context for reading everything else. Never a call to action.",
+             steps=[(TEXT, None), (BLUE, 1)]),
+        stat(4, "Notification failures (1h)",
+             'sum(increase(alertmanager_notifications_failed_total[1h])) or vector(0)',
+             18, 1, unit="short",
+             desc="The one number that invalidates every other panel here. A failed notification "
+                  "means the alert fired and nobody was told - which looks exactly like nothing "
+                  "having gone wrong.",
+             steps=[(GREEN, None), (RED, 1)]),
+
+        row(101, "Firing alerts", 5),
+        table(5, "Currently firing",
+              [target(f'{FIRING}', "{{{{alertname}}}}")],
+              0, 6, w=24, unit="short",
+              desc="Every firing alert with its labels. severity and category are what the routing "
+                   "tree matches on, so an alert missing either is one that reaches the fallback "
+                   "receiver instead of the right one."),
+
+        row(102, "History", 14),
+        timeseries(6, "Firing count by severity",
+                   [target(f'count by (severity) ({FIRING}) or vector(0)', "{{severity}}")],
+                   0, 15, w=12, unit="short", stack=True,
+                   desc="Read this for shape, not for height. A sawtooth is a flapping rule that "
+                        "needs a longer `for:`; a step that never comes down is a rule nobody is "
+                        "acting on.",
+                   overrides=[color_override("critical", RED),
+                              color_override("warning", ORANGE),
+                              color_override("info", BLUE)]),
+        timeseries(7, "Firing count by category",
+                   [target(f'count by (category) ({FIRING}) or vector(0)', "{{category}}")],
+                   12, 15, w=12, unit="short", stack=True,
+                   desc="Which subsystem is unhappy. One category lighting up entirely is usually "
+                        "one root cause the inhibition rules have not been taught about yet."),
+
+        row(103, "Delivery — did anybody actually get told?", 23),
+        timeseries(8, "Notifications sent by channel",
+                   [target('sum by (integration) (rate(alertmanager_notifications_total[$__rate_interval])) or vector(0)',
+                           "{{integration}}")],
+                   0, 24, w=8, unit="ops",
+                   desc="Email goes to Mailpit (:8025), webhook to the echo sink. Both are local; "
+                        "nothing leaves the machine."),
+        timeseries(9, "Notification failures by channel",
+                   [target('sum by (integration) (rate(alertmanager_notifications_failed_total[$__rate_interval])) or vector(0)',
+                           "{{integration}}")],
+                   8, 24, w=8, unit="ops",
+                   desc="Should be flat zero. Anything else means the alerting chain is broken at "
+                        "its last hop, which no other panel in this system would reveal.",
+                   overrides=[color_override("email", RED), color_override("webhook", RED)]),
+        timeseries(10, "Suppressed and silenced",
+                   [target('sum(alertmanager_alerts{state="suppressed"}) or vector(0)', "inhibited"),
+                    target('sum(alertmanager_silences{state="active"}) or vector(0)', "silences", "B")],
+                   16, 24, w=8, unit="short",
+                   desc="Inhibition suppressing consequences of a known cause is the system working. "
+                        "A silence that never expires is a rule that should have been fixed or "
+                        "deleted - check this panel before trusting a quiet alert channel.",
+                   overrides=[color_override("silences", ORANGE)]),
+
+        row(104, "Host resources — what the infrastructure alerts read", 32),
+        timeseries(11, "CPU used",
+                   [target('100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[$__rate_interval])) * 100)',
+                           "{{instance}}")],
+                   0, 33, w=8, unit="percent", fill=0,
+                   desc="From node-exporter. On Docker Desktop this is the engine's Linux VM, not "
+                        "the host operating system - which is still the right answer for "
+                        "'is the thing running these containers out of room'."),
+        timeseries(12, "Memory used",
+                   [target('(1 - node_memory_MemAvailable_bytes / clamp_min(node_memory_MemTotal_bytes, 1)) * 100',
+                           "{{instance}}")],
+                   8, 33, w=8, unit="percent", fill=0,
+                   desc="MemAvailable, not MemFree. Free memory on a healthy Linux host is near "
+                        "zero because the page cache holds the rest."),
+        timeseries(13, "Filesystem used",
+                   [target('(1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"} '
+                           '/ clamp_min(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}, 1)) * 100',
+                           "{{mountpoint}}")],
+                   16, 33, w=8, unit="percent", fill=0,
+                   desc="Two thresholds alert on this: 80% is a ticket, 90% is a page. Disk is the "
+                        "one resource where databases fail abruptly rather than degrading."),
+
+        row(105, "Datastore availability — the exporters behind the alerts", 41),
+        timeseries(14, "Up",
+                   [target('pg_up or vector(0)', "postgresql"),
+                    target('oracledb_up or vector(0)', "oracle", "B"),
+                    target('redis_up or vector(0)', "redis", "C"),
+                    target('clamp_max(kafka_brokers, 1) or vector(0)', "kafka", "D")],
+                   0, 42, w=12, unit="short", minimum=0,
+                   desc="Each is the exporter's own connection, not a scrape succeeding. An "
+                        "exporter answers perfectly well while unable to reach the thing it "
+                        "exports, and `up` would stay 1 throughout."),
+        timeseries(15, "Scrape targets down",
+                   [target('sum by (job) (up == 0) or vector(0)', "{{job}}")],
+                   12, 42, w=12, unit="short",
+                   desc="An exporter that stops does not raise its own alerts - it makes every "
+                        "alert built on its metrics permanently unable to fire. Absence of alerts "
+                        "is not health."),
+    ])
+
+# ---------------------------------------------------------------------------
 # 7. Traces
 # ---------------------------------------------------------------------------
 traces = dashboard(
@@ -848,5 +975,6 @@ if __name__ == "__main__":
     write("data", "redis.json", redis)
     write("messaging", "kafka.json", kafka)
     write("grpc", "grpc.json", grpc)
+    write("alerting", "alerting.json", alerting)
     write("traces", "traces.json", traces)
     write("profiles", "profiles.json", profiles)

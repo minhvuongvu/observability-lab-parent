@@ -520,6 +520,10 @@ services:
         condition: service_started
       pyroscope:
         condition: service_started
+      # Contact points are provisioned pointing at Mailpit; starting before it
+      # exists makes the first notification of every boot fail.
+      mailpit:
+        condition: service_started
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -532,6 +536,21 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_LOG_LEVEL: warn
+      # SMTP, pointed at Mailpit (step 16). Without this Grafana's email
+      # contact points are provisioned, appear healthy in the UI, and silently
+      # deliver nothing - which is the failure mode this whole step exists to
+      # remove, so it would be a poor one to leave in place.
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: mailpit:1025
+      GF_SMTP_FROM_ADDRESS: alerts@observability-lab.local
+      GF_SMTP_FROM_NAME: Observability Lab
+      GF_SMTP_SKIP_VERIFY: "true"
+      # Grafana's alert rules link back to panels; without a root URL those
+      # links resolve against the container's own hostname and go nowhere.
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT}
+      # Alertmanager is reachable from Grafana, so its silences and firing
+      # alerts can be read from the same place as everything else.
+      GF_UNIFIED_ALERTING_ENABLED: "true"
     ports:
       - "${BIND_HOST}:${GRAFANA_PORT}:3000"
     volumes:
@@ -551,6 +570,245 @@ services:
         limits:
           memory: 512M
 
+  # -------------------------------------------------------------------------
+  # Alertmanager - routing, grouping, inhibition and silencing (step 16).
+  #
+  # Prometheus decides that something is wrong; this decides who finds out and
+  # how often. Before this existed the rules evaluated and notified nobody,
+  # which is a rule set nobody can trust.
+  # -------------------------------------------------------------------------
+  alertmanager:
+    image: ${ALERTMANAGER_IMAGE}
+    container_name: lab-alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      # Needed for the silence links in notifications to resolve to something
+      # a browser on the host can actually open.
+      - --web.external-url=http://localhost:${ALERTMANAGER_PORT}
+    ports:
+      - "${BIND_HOST}:${ALERTMANAGER_PORT}:9093"
+    volumes:
+      - ../../infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ../../infrastructure/alertmanager/templates:/etc/alertmanager/templates:ro
+      - alertmanager-data:/alertmanager
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9093/-/healthy | grep -q OK"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # -------------------------------------------------------------------------
+  # Mailpit - the SMTP sink.
+  #
+  # Accepts any message from any sender and delivers it nowhere, showing it in
+  # a browser instead. That is exactly what a lab needs: an alert email that
+  # can be *read* rather than assumed to have been sent, with no risk of a
+  # misconfigured rule mailing a real person at three in the morning.
+  # -------------------------------------------------------------------------
+  mailpit:
+    image: ${MAILPIT_IMAGE}
+    container_name: lab-mailpit
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "${BIND_HOST}:${MAILPIT_UI_PORT}:8025"
+      - "${BIND_HOST}:${MAILPIT_SMTP_PORT}:1025"
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # -------------------------------------------------------------------------
+  # The webhook sink.
+  #
+  # Echoes and logs every request it receives, so `docker logs
+  # lab-alert-webhook` shows byte for byte what an incident manager, a chat
+  # integration or an auto-remediation hook would have been handed.
+  # -------------------------------------------------------------------------
+  alert-webhook:
+    image: ${WEBHOOK_SINK_IMAGE}
+    container_name: lab-alert-webhook
+    restart: unless-stopped
+    environment:
+      HTTP_PORT: 8080
+      LOG_WITHOUT_NEWLINE: "true"
+      DISABLE_REQUEST_LOGS: "false"
+    ports:
+      - "${BIND_HOST}:${ALERT_WEBHOOK_PORT}:8080"
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # -------------------------------------------------------------------------
+  # Exporters (step 16).
+  #
+  # Each is a deliberate, narrow bridge from lab-observability into lab-data.
+  # The network separation elsewhere in this stack says a log shipper has no
+  # business reaching a database; an exporter is the documented exception, and
+  # it pays for that with a read-only credential that cannot see one
+  # application row. See the init scripts under infrastructure/postgres and
+  # infrastructure/oracle for what those roles actually grant.
+  # -------------------------------------------------------------------------
+
+  # Host CPU, memory and disk. Note what this measures on Docker Desktop: the
+  # Linux VM the engine runs in, not macOS or Windows itself. Still the right
+  # signal for "is the thing running these containers out of room", which is
+  # the question the infrastructure alerts ask.
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE}
+    container_name: lab-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      # Filtered hard, and every exclusion below was earned by a false alert.
+      #
+      # Virtual and container filesystems are not capacity anybody can act on.
+      # Worse, on Docker Desktop the engine's VM also exposes:
+      #
+      #   iso9660  read-only loop images that are 100% full by definition, so
+      #            an unfiltered disk rule fires permanently on all of them
+      #   9p       the Windows host's own drives, passed through - somebody
+      #            else's capacity, and not what this stack consumes
+      #   /parent-distro, /mnt/host
+      #            WSL re-mounts of filesystems already reported under their
+      #            real path, so each one alerts twice
+      #
+      # What survives is the VM root and the Docker data disk, which are the
+      # two that genuinely stop the lab when they fill.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|host_mnt|parent-distro|mnt/host|usr/lib/(wsl|modules)|var/lib/docker/.+)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup.?|configfs|debugfs|devpts|devtmpfs|fuse\..*|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs|9p)$$
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      # No `rslave` propagation on the root mount. The usual node-exporter
+      # recipe uses `ro,rslave` so that filesystems mounted after the container
+      # starts become visible; Docker Desktop refuses it outright - "path / is
+      # mounted on / but it is not a shared or slave mount" - because its root
+      # is not a shared mount inside the VM. Plain `ro` works on Docker Desktop
+      # and on Linux alike, and the lab never mounts a new filesystem mid-run.
+      - /:/host/root:ro
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  postgres-exporter:
+    image: ${POSTGRES_EXPORTER_IMAGE}
+    container_name: lab-postgres-exporter
+    restart: unless-stopped
+    environment:
+      # sslmode=disable because the lab's PostgreSQL serves plaintext on an
+      # internal Docker network. A real deployment does not do this.
+      DATA_SOURCE_NAME: "postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_SUPERUSER_DB}?sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+    networks:
+      - lab-observability
+      - lab-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  oracle-exporter:
+    image: ${ORACLE_EXPORTER_IMAGE}
+    container_name: lab-oracle-exporter
+    restart: unless-stopped
+    environment:
+      # A URL, not the EZConnect string the exporter's README shows. This build
+      # uses the go-ora driver, and the `user/password@host:port/service` form
+      # fails with "missing port in address" - while the exporter stays up, is
+      # scraped happily, and reports oracledb_up = 0 forever. A dependency that
+      # is unreachable and a monitor that is misconfigured look identical from
+      # the outside, which is exactly the confusion this step exists to remove.
+      #
+      # The password appears in a URL, so a character that needs percent
+      # encoding must be encoded here.
+      DATA_SOURCE_NAME: "oracle://${ORACLE_MONITOR_USER}:${ORACLE_MONITOR_PASSWORD}@oracle:1521/${ORACLE_PDB}"
+      CUSTOM_METRICS: /etc/oracle/exporter-metrics.toml
+    volumes:
+      - ../../infrastructure/oracle/exporter-metrics.toml:/etc/oracle/exporter-metrics.toml:ro
+    networks:
+      - lab-observability
+      - lab-data
+    depends_on:
+      oracle:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  redis-exporter:
+    image: ${REDIS_EXPORTER_IMAGE}
+    container_name: lab-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - lab-observability
+      - lab-data
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  kafka-exporter:
+    image: ${KAFKA_EXPORTER_IMAGE}
+    container_name: lab-kafka-exporter
+    restart: unless-stopped
+    command:
+      - --kafka.server=kafka:9092
+      # Consumer lag is the metric this exporter exists for. Naming the filters
+      # explicitly is cheaper than discovering the series is missing from an
+      # alert that therefore never fires.
+      - --topic.filter=.*
+      - --group.filter=.*
+    networks:
+      - lab-observability
+      - lab-data
+    depends_on:
+      kafka:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
 networks:
   # The observability stack talks to itself and is reached from the host. It is
   # deliberately not on lab-data: a log shipper has no business being able to
@@ -560,6 +818,8 @@ networks:
     driver: bridge
 
 volumes:
+  alertmanager-data:
+    name: lab-alertmanager-data
   pyroscope-data:
     name: lab-pyroscope-data
   tempo-data:

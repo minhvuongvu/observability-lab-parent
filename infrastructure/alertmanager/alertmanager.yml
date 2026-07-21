@@ -1,0 +1,206 @@
+# ---------------------------------------------------------------------------
+# Alertmanager - what happens after a rule fires.
+#
+# Prometheus decides *that* something is wrong. This decides who finds out,
+# how quickly, and how many times. Those are different problems, and conflating
+# them is why so many alert channels end up muted: a rule set can be perfectly
+# correct and still produce forty notifications for one broker failure.
+#
+# Three mechanisms do the work here, and each solves a distinct failure of
+# naive alerting:
+#
+#   grouping    - one notification per incident, not per series
+#   inhibition  - suppress the consequences when the cause is already firing
+#   repeat      - re-notify at a cadence matched to how urgent the thing is
+#
+# Delivery targets are local sinks. Mailpit accepts any SMTP and shows it in a
+# browser; the echo container logs every webhook body. Nothing leaves the
+# machine, and both exist so an alert can be *seen* arriving rather than
+# assumed to have arrived.
+#
+# Addresses and URLs are literals, not ${VARIABLES}. Alertmanager does not
+# expand environment variables in this file - a ${VAR} here is delivered to an
+# SMTP server verbatim as a recipient address, which fails in a way nobody
+# reads. Every value below is therefore edited here, and here only.
+# ---------------------------------------------------------------------------
+
+global:
+  # Mailpit accepts anything, with no TLS and no authentication. That is the
+  # entire reason it is here rather than a real relay.
+  smtp_smarthost: mailpit:1025
+  smtp_from: alerts@observability-lab.local
+  smtp_require_tls: false
+  # How long a firing alert may go un-refreshed by Prometheus before
+  # Alertmanager decides it has stopped. Longer than the evaluation interval by
+  # a wide margin, or a slow scrape resolves alerts that are still true.
+  resolve_timeout: 5m
+
+# ---------------------------------------------------------------------------
+# Notification templates.
+#
+# An alert that arrives without saying what broke, what it affects and where to
+# look next is an alert that gets escalated blindly - which costs somebody
+# else's time to answer a question the alert already knew.
+# ---------------------------------------------------------------------------
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+route:
+  # Group by the alert and the thing it is about. Not by instance: fifty
+  # instances of one problem is one incident, and notifying per instance is how
+  # a partial outage becomes an unreadable inbox.
+  group_by: [alertname, category, service]
+
+  # Wait this long for other alerts in the same group before sending. A cause
+  # and its consequences almost always fire within seconds of each other, so
+  # this buys the batch that makes one notification instead of five.
+  group_wait: 30s
+  # Then, if new alerts join an existing group, wait this long before sending
+  # an update rather than sending immediately.
+  group_interval: 5m
+  # Nothing is re-sent more often than this unless it changes.
+  repeat_interval: 4h
+
+  # The default. Every alert reaches somebody even if it matches no route
+  # below - a rule that fires into a void is worse than no rule.
+  receiver: default-email
+
+  routes:
+    # -----------------------------------------------------------------------
+    # Critical: a person is expected to act now.
+    #
+    # Both channels, a short group_wait, and a repeat interval that keeps
+    # reminding. If this fires and nobody is doing anything, the severity is
+    # wrong - not the interval.
+    # -----------------------------------------------------------------------
+    - matchers:
+        - severity = critical
+      receiver: critical-oncall
+      group_wait: 10s
+      repeat_interval: 1h
+      # Continue evaluation so a critical alert also reaches the webhook route
+      # below, which is what an external incident system would consume.
+      continue: true
+
+    # -----------------------------------------------------------------------
+    # Warning: worth a ticket today, not a phone call tonight.
+    # -----------------------------------------------------------------------
+    - matchers:
+        - severity = warning
+      receiver: warning-team
+      group_wait: 1m
+      repeat_interval: 6h
+
+    # -----------------------------------------------------------------------
+    # Information: context, not a call to action.
+    #
+    # Grouped aggressively and repeated rarely, because the value is in being
+    # able to find it afterwards rather than in being told about it now. These
+    # exist so that "was anything unusual happening at 14:05?" has an answer.
+    # -----------------------------------------------------------------------
+    - matchers:
+        - severity = info
+      receiver: info-digest
+      group_wait: 5m
+      group_interval: 30m
+      repeat_interval: 24h
+
+    # -----------------------------------------------------------------------
+    # Everything critical also goes to the webhook, for whatever would page in
+    # a real deployment. Terminal: this is the last route.
+    # -----------------------------------------------------------------------
+    - matchers:
+        - severity = critical
+      receiver: critical-webhook
+
+# ---------------------------------------------------------------------------
+# Inhibition - suppress the noise a known cause is already explaining.
+#
+# This is the part that makes an alert channel survive a real outage. When
+# PostgreSQL goes down, the Order Service's error rate, its latency and its
+# connection pool all fire within a minute. Three of those four notifications
+# tell nobody anything they do not already know from the first.
+# ---------------------------------------------------------------------------
+inhibit_rules:
+  # A critical alert silences warnings about the same thing.
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    # Only when they concern the same subject. Without equal, a single critical
+    # anywhere would mute every warning in the system - which is how an
+    # inhibition rule becomes an outage of its own.
+    equal: [alertname, category, service]
+
+  # A service that is down explains everything else that service is doing.
+  - source_matchers:
+      - alertname = ServiceDown
+    target_matchers:
+      - category = application
+    equal: [service]
+
+  # A datastore that is down explains the application errors that follow it.
+  - source_matchers:
+      - category = database
+      - severity = critical
+    target_matchers:
+      - category = application
+      - severity = warning
+    # No `equal`: the two services share both databases between them, so
+    # scoping this by service would suppress nothing useful.
+
+  # A broker that is down explains consumer lag. Lag is a symptom of it.
+  - source_matchers:
+      - alertname = KafkaBrokerDown
+    target_matchers:
+      - alertname = KafkaConsumerLagHigh
+
+receivers:
+  # -------------------------------------------------------------------------
+  # Default. Reached only by an alert that matches no severity route, which
+  # means somebody wrote a rule without a severity label.
+  # -------------------------------------------------------------------------
+  - name: default-email
+    email_configs:
+      - to: team@observability-lab.local
+        send_resolved: true
+        headers:
+          Subject: '[lab][unrouted] {{ .GroupLabels.alertname }}'
+
+  - name: critical-oncall
+    email_configs:
+      - to: oncall@observability-lab.local
+        send_resolved: true
+        headers:
+          Subject: '{{ template "lab.subject" . }}'
+        html: '{{ template "lab.email.html" . }}'
+
+  - name: warning-team
+    email_configs:
+      - to: team@observability-lab.local
+        send_resolved: true
+        headers:
+          Subject: '{{ template "lab.subject" . }}'
+        html: '{{ template "lab.email.html" . }}'
+
+  - name: info-digest
+    email_configs:
+      - to: digest@observability-lab.local
+        # Resolved notifications are suppressed for information alerts: they
+        # double the volume of a class that nobody is acting on anyway.
+        send_resolved: false
+        headers:
+          Subject: '{{ template "lab.subject" . }}'
+        html: '{{ template "lab.email.html" . }}'
+
+  # -------------------------------------------------------------------------
+  # The webhook. Alertmanager POSTs the full alert group as JSON, which is what
+  # an incident manager, a chat integration or an auto-remediation hook would
+  # consume. The sink logs the body, so `docker logs lab-alert-webhook` shows
+  # exactly what a real integration would receive.
+  # -------------------------------------------------------------------------
+  - name: critical-webhook
+    webhook_configs:
+      - url: http://alert-webhook:8080/alerts
+        send_resolved: true
+        max_alerts: 0

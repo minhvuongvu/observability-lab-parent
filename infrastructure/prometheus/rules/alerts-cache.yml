@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Redis alerts.
+#
+# Redis being down is a degradation here, not an outage: every cache in this
+# system has a defined miss path that reaches the database. So it is a warning
+# rather than a page - and the thing that would page is the latency it causes
+# downstream, which alerts-application.yml already covers.
+#
+# That is worth stating explicitly, because "the cache is down" reads like a
+# critical and treating it as one trains people to page for a degradation the
+# system was designed to absorb.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-cache
+    interval: 30s
+    rules:
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: warning
+          category: cache
+        annotations:
+          summary: "Redis is unreachable"
+          description: "The exporter cannot reach Redis."
+          impact: "Degraded, not broken: every read falls through to PostgreSQL or Oracle. Expect latency, not errors."
+          action: "docker compose ps redis. Watch database pool pressure while it is down - that is where the load went."
+          runbook: "docs/Alerting.md#redisdown"
+          dashboard: "http://localhost:3000/d/lab-redis"
+
+      - alert: RedisHighLatency
+        # Average command duration, derived from the exporter's two counters.
+        # Redis is single-threaded, so a slow command is not slow in isolation:
+        # it blocks every other client for its whole duration.
+        expr: |
+          sum(rate(redis_commands_duration_seconds_total[5m]))
+            / clamp_min(sum(rate(redis_commands_total[5m])), 0.001) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          category: cache
+        annotations:
+          summary: "Redis commands are averaging over 10ms"
+          description: "Mean command duration is {{ $value | printf \"%.4f\" }}s."
+          impact: "Redis is single-threaded: one slow command delays every other client behind it."
+          action: "Look for an O(N) command - KEYS, or a large SMEMBERS. The cache is meant to hold small values."
+          runbook: "docs/Alerting.md#redishighlatency"
+          dashboard: "http://localhost:3000/d/lab-redis"
+
+      - alert: RedisMemoryHigh
+        # maxmemory is 0 when unconfigured, which would make this divide by
+        # zero and fire nonsense - hence the guard on the denominator.
+        expr: |
+          redis_memory_used_bytes / clamp_min(redis_memory_max_bytes, 1) > 0.9
+            and redis_memory_max_bytes > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: cache
+        annotations:
+          summary: "Redis is above 90% of its memory limit"
+          description: "{{ $value | humanizePercentage }} of maxmemory is in use."
+          impact: "Eviction begins. The hit ratio falls and the databases take the difference."
+          action: "Check the eviction policy and the TTLs. A cache with no TTL is a memory leak with a delay fuse."
+          runbook: "docs/Alerting.md#redismemoryhigh"
+          dashboard: "http://localhost:3000/d/lab-redis"

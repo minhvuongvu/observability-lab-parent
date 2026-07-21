@@ -1,0 +1,117 @@
+{{/* ---------------------------------------------------------------------
+  Notification templates.
+
+  The whole purpose is that somebody woken at 03:00 can act without first
+  opening four browser tabs. Every notification therefore answers, in order:
+
+    what fired          the alert name and its summary
+    how bad             the severity, stated rather than implied by colour
+    what it affects     service, category and the labels that identify it
+    what to do next     the runbook and dashboard links from the rule's
+                        annotations
+
+  The last line is the one that matters. An alert without a next action is a
+  notification that costs somebody else's time to interpret.
+--------------------------------------------------------------------- */}}
+
+{{/*
+  One line, and it has to stay one line. A Go template writes every newline in
+  its body verbatim, so laying this out across several lines for readability
+  produces an SMTP Subject header containing raw newlines - which mail clients
+  render as three separate lines and some relays reject outright.
+*/}}
+{{ define "lab.subject" }}[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}][{{ .CommonLabels.severity | toUpper }}] {{ .GroupLabels.alertname }}{{ if .GroupLabels.service }} on {{ .GroupLabels.service }}{{ end }}{{ end }}
+
+{{/* Plain-text body, used by anything that cannot render HTML. */}}
+{{ define "lab.text" }}
+{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }}: {{ .GroupLabels.alertname }}
+
+{{ range .Alerts }}
+Severity   : {{ .Labels.severity }}
+Category   : {{ .Labels.category }}
+{{ if .Labels.service }}Service    : {{ .Labels.service }}{{ end }}
+Started    : {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}
+
+{{ .Annotations.summary }}
+
+{{ if .Annotations.description }}{{ .Annotations.description }}{{ end }}
+
+{{ if .Annotations.impact }}Impact     : {{ .Annotations.impact }}{{ end }}
+{{ if .Annotations.action }}First step : {{ .Annotations.action }}{{ end }}
+{{ if .Annotations.runbook }}Runbook    : {{ .Annotations.runbook }}{{ end }}
+{{ if .Annotations.dashboard }}Dashboard  : {{ .Annotations.dashboard }}{{ end }}
+---
+{{ end }}
+{{ end }}
+
+{{ define "lab.email.html" }}
+<!doctype html>
+<html>
+<body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;color:#1a1a1a;margin:0;padding:16px;background:#f6f7f9">
+
+  <div style="max-width:720px;margin:0 auto">
+
+    <div style="padding:12px 16px;border-radius:6px 6px 0 0;color:#fff;background:{{ if eq .Status "resolved" }}#2e7d32{{ else if eq .CommonLabels.severity "critical" }}#c62828{{ else if eq .CommonLabels.severity "warning" }}#ef6c00{{ else }}#1565c0{{ end }}">
+      <strong style="font-size:16px">
+        {{ if eq .Status "resolved" }}RESOLVED{{ else }}{{ .CommonLabels.severity | toUpper }}{{ end }}
+        &mdash; {{ .GroupLabels.alertname }}
+      </strong>
+      <div style="opacity:.9;margin-top:4px">
+        {{ .Alerts.Firing | len }} firing, {{ .Alerts.Resolved | len }} resolved
+        {{ if .GroupLabels.service }}&middot; {{ .GroupLabels.service }}{{ end }}
+        {{ if .GroupLabels.category }}&middot; {{ .GroupLabels.category }}{{ end }}
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e0e0e0;border-top:none;border-radius:0 0 6px 6px;padding:4px 16px 16px">
+    {{ range .Alerts }}
+      <div style="border-bottom:1px solid #eee;padding:12px 0">
+
+        <div style="font-weight:600;margin-bottom:6px">{{ .Annotations.summary }}</div>
+
+        {{ if .Annotations.description }}
+          <div style="margin-bottom:8px;color:#444">{{ .Annotations.description }}</div>
+        {{ end }}
+
+        <table style="border-collapse:collapse;font-size:13px;margin-bottom:8px">
+          {{ if .Annotations.impact }}
+          <tr>
+            <td style="padding:2px 12px 2px 0;color:#666;vertical-align:top">Impact</td>
+            <td style="padding:2px 0">{{ .Annotations.impact }}</td>
+          </tr>
+          {{ end }}
+          {{ if .Annotations.action }}
+          <tr>
+            <td style="padding:2px 12px 2px 0;color:#666;vertical-align:top">First step</td>
+            <td style="padding:2px 0"><strong>{{ .Annotations.action }}</strong></td>
+          </tr>
+          {{ end }}
+          <tr>
+            <td style="padding:2px 12px 2px 0;color:#666;vertical-align:top">Since</td>
+            <td style="padding:2px 0">{{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</td>
+          </tr>
+        </table>
+
+        <div style="font-size:12px;color:#666">
+          {{ range .Labels.SortedPairs }}{{ if ne .Name "severity" }}<code style="background:#f0f0f0;padding:1px 5px;border-radius:3px;margin-right:4px">{{ .Name }}={{ .Value }}</code>{{ end }}{{ end }}
+        </div>
+
+        <div style="margin-top:10px">
+          {{ if .Annotations.runbook }}<a href="{{ .Annotations.runbook }}" style="margin-right:12px">Runbook</a>{{ end }}
+          {{ if .Annotations.dashboard }}<a href="{{ .Annotations.dashboard }}" style="margin-right:12px">Dashboard</a>{{ end }}
+          <a href="{{ .GeneratorURL }}">Query</a>
+        </div>
+
+      </div>
+    {{ end }}
+    </div>
+
+    <div style="color:#888;font-size:12px;margin-top:12px">
+      observability-lab &middot; Alertmanager
+      &middot; <a href="http://localhost:9093">silence this</a>
+    </div>
+
+  </div>
+</body>
+</html>
+{{ end }}

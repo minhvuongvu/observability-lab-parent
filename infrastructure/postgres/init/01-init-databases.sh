@@ -35,3 +35,35 @@ echo "Provisioning application databases"
 provision "${ORDER_DB_NAME}"    "${ORDER_DB_USER}"    "${ORDER_DB_PASSWORD}"
 provision "${KEYCLOAK_DB_NAME}" "${KEYCLOAK_DB_USER}" "${KEYCLOAK_DB_PASSWORD}"
 echo "Application databases ready"
+
+# ---------------------------------------------------------------------------
+# Read-only monitoring role, for postgres-exporter (step 16).
+#
+# pg_monitor is a built-in role that grants exactly what a metrics exporter
+# needs - the pg_stat_* views, pg_ls_dir and friends - and nothing else. It
+# cannot read a single row of application data, which matters because the
+# exporter holds this password in an environment variable and publishes what it
+# reads over unauthenticated HTTP.
+#
+# NOSUPERUSER and NOCREATEDB are the defaults and are stated anyway: a
+# monitoring account that can be widened later without anybody noticing is how
+# "read-only" quietly stops being true.
+# ---------------------------------------------------------------------------
+if [ -n "${MONITOR_DB_USER:-}" ]; then
+  echo "Provisioning monitoring role '${MONITOR_DB_USER}'"
+
+  psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER}" --dbname "${POSTGRES_DB}" <<SQL
+CREATE ROLE "${MONITOR_DB_USER}" WITH LOGIN PASSWORD '${MONITOR_DB_PASSWORD}'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE;
+GRANT pg_monitor TO "${MONITOR_DB_USER}";
+SQL
+
+  # CONNECT on each application database, so the exporter can report per-database
+  # statistics. Still no table privileges anywhere.
+  for db in "${POSTGRES_DB}" "${ORDER_DB_NAME}" "${KEYCLOAK_DB_NAME}"; do
+    psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER}" --dbname "${POSTGRES_DB}" \
+      -c "GRANT CONNECT ON DATABASE \"${db}\" TO \"${MONITOR_DB_USER}\";"
+  done
+
+  echo "Monitoring role ready"
+fi

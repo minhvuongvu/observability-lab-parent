@@ -175,6 +175,16 @@ server:
   port: 8082
   shutdown: graceful
 
+  # Tomcat's own MBeans, which Spring Boot leaves unregistered by default.
+  # Without this the tomcat_threads_* meters do not exist at all - and the
+  # TomcatThreadPoolSaturated alert (step 16) is not "quiet", it is unable to
+  # fire. Thread exhaustion is a failure whose whole signature is that CPU,
+  # heap and the database all look healthy, so it is the last one to leave
+  # unmeasured.
+  tomcat:
+    mbeanregistry:
+      enabled: true
+
 # Service identity. Stamped onto every log line, metric tag and span attribute.
 app:
   name: ${spring.application.name}

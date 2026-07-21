@@ -40,3 +40,49 @@ EXIT
 SQL
 
 echo "Inventory schema privileges applied"
+
+# ---------------------------------------------------------------------------
+# Read-only monitoring user, for oracledb_exporter (step 16).
+#
+# SELECT_CATALOG_ROLE is the narrow answer: it grants SELECT on the data
+# dictionary and the V$ performance views - which is the entirety of what a
+# metrics exporter reads - and grants nothing at all on application schemas.
+# The exporter therefore cannot see a single stock level, which matters because
+# it holds this password in an environment variable and publishes what it reads
+# over unauthenticated HTTP.
+#
+# Created in the PDB rather than as a common user: the exporter connects to the
+# service, and a C## common user would be a privilege that spans containers for
+# no reason.
+# ---------------------------------------------------------------------------
+if [ -n "${ORACLE_MONITOR_USER:-}" ]; then
+  echo "Provisioning monitoring user ${ORACLE_MONITOR_USER} in ${PDB}"
+
+  sqlplus -s -L / as sysdba <<SQL
+WHENEVER SQLERROR EXIT SQL.SQLCODE
+SET FEEDBACK OFF
+
+ALTER SESSION SET CONTAINER = ${PDB};
+
+CREATE USER ${ORACLE_MONITOR_USER} IDENTIFIED BY "${ORACLE_MONITOR_PASSWORD}";
+
+GRANT CREATE SESSION TO ${ORACLE_MONITOR_USER};
+GRANT SELECT_CATALOG_ROLE TO ${ORACLE_MONITOR_USER};
+
+-- Named explicitly as well as through the role. SELECT_CATALOG_ROLE is not
+-- enabled by default in every session context, and an exporter that silently
+-- returns zero rows is worse than one that fails to connect.
+GRANT SELECT ON V_\$SESSION TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON V_\$SYSSTAT TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON V_\$SYSTEM_EVENT TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON V_\$RESOURCE_LIMIT TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON V_\$PROCESS TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON V_\$SQLAREA TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON DBA_TABLESPACE_USAGE_METRICS TO ${ORACLE_MONITOR_USER};
+GRANT SELECT ON DBA_TABLESPACES TO ${ORACLE_MONITOR_USER};
+
+EXIT
+SQL
+
+  echo "Monitoring user ready"
+fi

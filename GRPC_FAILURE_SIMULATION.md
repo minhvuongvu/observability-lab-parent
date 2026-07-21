@@ -4,7 +4,7 @@ Chaos scenarios for the gRPC hop. Each one breaks something deliberately and sta
 every signal should show** — because a resilience mechanism that has never been observed working is
 an assumption, and an alert that has never fired is untested.
 
-This extends the failure-simulation work of step 16. The endpoints and toggles here are guarded the
+This extends the failure-simulation work of step 17. The endpoints and toggles here are guarded the
 same way: `local` and `dev` profiles only, `ADMIN` role required, never enabled in `prod`.
 
 ---
@@ -392,5 +392,5 @@ between an investigation and a guess:
 ```
 
 Every toggle is guarded by profile (`local`, `dev`) and by the `ADMIN` role, and is disabled under
-`prod` — the same guard step 16's HTTP failure endpoints use. A chaos endpoint reachable in
+`prod` — the same guard step 17's HTTP failure endpoints use. A chaos endpoint reachable in
 production is not a learning tool; it is a vulnerability.

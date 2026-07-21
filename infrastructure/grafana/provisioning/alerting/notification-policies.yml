@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# Grafana notification policy tree.
+#
+# The same shape as the route tree in alertmanager.yml, deliberately: two
+# engines, one policy. If the two disagreed about what "critical" means, an
+# alert's urgency would depend on which engine happened to evaluate it — which
+# is the sort of inconsistency nobody discovers until an incident.
+#
+# Grafana replaces the whole tree on provisioning, so this file is the complete
+# policy rather than an addition to a default.
+# ---------------------------------------------------------------------------
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: default-email
+
+    # One notification per incident, not per series. Grouping by instance would
+    # turn fifty instances of one problem into fifty emails.
+    group_by:
+      - alertname
+      - category
+      - service
+
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+
+    # The operator is quoted in every matcher below. A bare `=` in YAML is the
+    # reserved value tag, so [severity, =, critical] fails to parse and Grafana
+    # silently keeps its default policy - which routes nothing anywhere.
+    routes:
+      # A person is expected to act now: short wait, frequent reminder.
+      - receiver: critical-oncall
+        object_matchers:
+          - [severity, "=", critical]
+        group_wait: 10s
+        group_interval: 5m
+        repeat_interval: 1h
+        continue: false
+
+      # A ticket today, not a phone call tonight.
+      - receiver: warning-team
+        object_matchers:
+          - [severity, "=", warning]
+        group_wait: 1m
+        group_interval: 10m
+        repeat_interval: 6h
+        continue: false
+
+      # Context, not a call to action. Batched hard and repeated rarely: the
+      # value is in being findable afterwards, not in arriving now.
+      - receiver: info-digest
+        object_matchers:
+          - [severity, "=", info]
+        group_wait: 5m
+        group_interval: 30m
+        repeat_interval: 24h
+        continue: false
+
+# ---------------------------------------------------------------------------
+# Mute timings are deliberately absent.
+#
+# A maintenance window that silences alerts is a real need and a real hazard:
+# the most common way one is misused is to mute a class of alert permanently
+# because it was noisy, which is a rule that should have been fixed or deleted.
+# Silences in this lab are created explicitly, by hand, with an expiry.
+# ---------------------------------------------------------------------------

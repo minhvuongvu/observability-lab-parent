@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Database alerts.
+#
+# Two engines, two exporters, and deliberately two views of each: the server's
+# own (pg_up, oracledb_up) and the application's (Hikari pool waits). They fail
+# differently and the pair is what locates the problem - a pool exhausted while
+# the server is healthy is the application holding connections too long, not a
+# database fault.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-database-availability
+    interval: 30s
+    rules:
+
+      - alert: PostgresDown
+        # From the exporter's own connection, not from a scrape target being
+        # up: postgres-exporter answers perfectly well while unable to reach
+        # PostgreSQL, and `up` would stay 1 throughout.
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: database
+        annotations:
+          summary: "PostgreSQL is unreachable"
+          description: "The exporter cannot open a connection to PostgreSQL."
+          impact: "The Order Service cannot read or write an order. Keycloak cannot issue a token."
+          action: "docker compose ps postgres, then its logs. Check disk space before assuming a crash."
+          runbook: "docs/Alerting.md#postgresdown"
+          dashboard: "http://localhost:3000/d/lab-databases"
+
+      - alert: OracleDown
+        expr: oracledb_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: database
+        annotations:
+          summary: "Oracle is unreachable"
+          description: "The exporter cannot open a connection to the Oracle service."
+          impact: "The Inventory Service cannot reserve stock. Orders are accepted and never settled."
+          action: "docker compose ps oracle. Oracle is slow to become healthy - confirm it is not still starting."
+          runbook: "docs/Alerting.md#oracledown"
+          dashboard: "http://localhost:3000/d/lab-databases"
+
+  - name: lab-database-performance
+    interval: 30s
+    rules:
+
+      - alert: PostgresSlowQueries
+        # The longest currently-running transaction. A minute is far beyond
+        # anything this system issues deliberately, so it means a statement is
+        # stuck rather than merely slow - usually behind a lock.
+        expr: |
+          max by (datname) (pg_stat_activity_max_tx_duration{datname!=""}) > 60
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "A transaction in {{ $labels.datname }} has been running for over a minute"
+          description: "Longest running transaction: {{ $value | humanizeDuration }}."
+          impact: "It holds locks and a connection. Other requests queue behind it, and the pool drains."
+          action: "pg_stat_activity for the statement and its wait event. A blocked transaction is more common than a slow one."
+          runbook: "docs/Alerting.md#postgresslowqueries"
+          dashboard: "http://localhost:3000/d/lab-databases"
+
+      - alert: OracleSlowQueries
+        # From the custom metric in infrastructure/oracle/exporter-metrics.toml:
+        # the longest active user session's last_call_et.
+        expr: oracledb_longops_longest_running_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "An Oracle session has been executing for over a minute"
+          description: "Longest active user call: {{ $value | humanizeDuration }}."
+          impact: "It holds a connection from a pool of ten. Stock reservations queue behind it."
+          action: "v$session for the SQL_ID, then v$sql for the statement. Check for a missing index on stock_levels."
+          runbook: "docs/Alerting.md#oracleslowqueries"
+          dashboard: "http://localhost:3000/d/lab-databases"
+
+      - alert: DatabasePoolExhausted
+        # Threads waiting on a connection is the shape almost every "the site
+        # is slow" incident actually has - and it is the application's view,
+        # which is why it stays even though both servers are now exported.
+        expr: hikaricp_connections_pending > 0
+        for: 2m
+        labels:
+          severity: warning
+          category: database
+        annotations:
+          summary: "{{ $labels.service }} has threads waiting for a database connection"
+          description: "{{ $value }} thread(s) are queued on the {{ $labels.pool }} pool."
+          impact: "Every request needing the database waits, so latency rises with no error and no server-side fault."
+          action: "If the server is healthy, the application is holding connections too long. Check for a slow query inside a transaction."
+          runbook: "docs/Alerting.md#databasepoolexhausted"
+          dashboard: "http://localhost:3000/d/lab-databases"

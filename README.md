@@ -118,6 +118,8 @@ log — is in [docs/Architecture.md](docs/Architecture.md).
 | Object storage | MinIO |
 | Databases | PostgreSQL (Order), Oracle XE (Inventory) |
 | Metrics | Micrometer, Prometheus, VictoriaMetrics |
+| Alerting | Prometheus rules, Alertmanager, Grafana unified alerting, Mailpit |
+| Exporters | node, postgres, oracledb, redis, kafka |
 | Logs | Logback JSON, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch, Elasticsearch |
 | Traces | OpenTelemetry SDK + Collector, Tempo, Jaeger, Zipkin |
 | Profiles | Pyroscope agent + server |
@@ -360,6 +362,7 @@ by service and environment.
 | [docs/Metrics.md](docs/Metrics.md) | Micrometer instrument types, common tags and cardinality, histograms vs pre-computed percentiles, Prometheus and VictoriaMetrics, rules and dashboards |
 | [docs/Tracing.md](docs/Tracing.md) | The OpenTelemetry agent, the collector fan-out to Tempo/Jaeger/Zipkin, span attributes, events, status and links, and cross-signal correlation |
 | [docs/Profiling.md](docs/Profiling.md) | Continuous profiling with async-profiler and Pyroscope: CPU, allocation, live heap and lock contention, and the trace-to-profile link |
+| [docs/Alerting.md](docs/Alerting.md) | Alerting: severities and what each means, the full alert matrix, Alertmanager routing, grouping and inhibition, delivery to email and webhook, and the first response to every alert |
 | [docs/Grpc.md](docs/Grpc.md) | The internal gRPC hop: the contract and codegen, the interceptor chain, discovery and client-side load balancing, deadlines, status taxonomy, retries, circuit breaking, and what all of it emits |
 | [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the eleven dashboards, and where to look by symptom |
 
@@ -377,7 +380,8 @@ by service and environment.
 | [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md) | Seven chaos scenarios, with the expected signal-by-signal response for each |
 
 Deployment, Gateway, Runbook, Troubleshooting, Performance and Security guides are produced by the
-steps that introduce each capability, and consolidated in step 17.
+steps that introduce each capability, and consolidated in step 18. The alert guide, alert matrix
+and incident-response notes are in [docs/Alerting.md](docs/Alerting.md).
 
 ---
 
@@ -403,8 +407,9 @@ documented before the next one starts.
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | **Complete** |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
 | 15 | Enterprise gRPC: proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
-| **16** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
-| 17 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
+| 16 | Alerting: 33 rules in three severities, Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
+| **17** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
+| 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 `PROMPT_MICROSERVICE_OBSERVABILITY_STEPS.md` (the order to build it in).

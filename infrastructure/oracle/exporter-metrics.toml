@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Custom metrics for oracledb_exporter.
+#
+# The exporter's built-in set covers sessions, waits, tablespaces and the SGA.
+# What it does not have is a "slow query" signal, and the OracleSlowQueries
+# alert needs one - so it is defined here rather than the alert being written
+# against a metric that does not exist.
+#
+# Every query below reads only V$ views, which is exactly what
+# SELECT_CATALOG_ROLE grants the monitoring user. None of them can see an
+# application row, and that is deliberate: this exporter holds a database
+# password and publishes what it reads over unauthenticated HTTP.
+#
+# Keep these cheap. They run on every scrape - a query that is itself slow
+# becomes the thing it was meant to detect.
+# ---------------------------------------------------------------------------
+
+# The longest currently-executing user call.
+#
+# last_call_et is seconds since the session's current call began, so for an
+# ACTIVE session it is how long the statement running right now has been
+# running. Sessions that are merely connected and idle are excluded by the
+# status filter - otherwise a healthy connection pool, which holds sessions
+# open for hours by design, would read as a permanently stuck query.
+[[metric]]
+context = "longops"
+metricsdesc = { longest_running_seconds = "Seconds the longest currently-executing user statement has been running." }
+request = '''
+SELECT NVL(MAX(last_call_et), 0) AS longest_running_seconds
+  FROM v$session
+ WHERE status = 'ACTIVE'
+   AND type = 'USER'
+   AND username IS NOT NULL
+'''
+
+# How many user sessions are executing right now, split by whether they are
+# working or waiting. A rising WAITING count with a flat ACTIVE one is
+# contention rather than load, and the two call for different responses.
+[[metric]]
+context = "sessions_by_state"
+labels = ["state"]
+metricsdesc = { count = "User sessions by wait state." }
+request = '''
+SELECT state, COUNT(*) AS count
+  FROM v$session
+ WHERE type = 'USER'
+   AND username IS NOT NULL
+ GROUP BY state
+'''
+
+# Tablespace utilisation is deliberately NOT defined here.
+#
+# The exporter already publishes oracledb_tablespace_used_percent as a built-in,
+# and a custom metric that lands on the same fully-qualified name with different
+# labels does not override it or get ignored - it panics the exporter on
+# startup, before it serves a single scrape:
+#
+#   panic: descriptors reported by collector have inconsistent label names or
+#   help strings for the same fully-qualified name
+#
+# So: check the built-in set before adding a context here. A name collision is
+# a crash loop, not a warning.

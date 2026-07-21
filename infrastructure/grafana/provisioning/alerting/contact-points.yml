@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# Grafana contact points - where Grafana's own alert rules are delivered.
+#
+# These are separate from Alertmanager's receivers on purpose, and the two are
+# not duplicates of each other. Prometheus rules go to Alertmanager; the rules
+# Grafana evaluates - the ones querying Loki, which Prometheus cannot reach -
+# go here. Same three severities, same two channels, two engines.
+#
+# Addresses are literals for the same reason as in alertmanager.yml: they are
+# fictional lab constants, and a variable that silently fails to expand is
+# worse than a value written where a reviewer can see it.
+# ---------------------------------------------------------------------------
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: critical-oncall
+    receivers:
+      - uid: lab-critical-email
+        type: email
+        settings:
+          addresses: oncall@observability-lab.local
+          singleEmail: false
+          subject: '[{{ .Status | toUpper }}][CRITICAL] {{ .GroupLabels.alertname }}'
+        # Resolved notifications are sent for critical alerts, because "it
+        # stopped" is information somebody who was woken by it needs.
+        disableResolveMessage: false
+
+      # Critical also goes to the webhook, which is what an incident manager or
+      # an auto-remediation hook would consume in a real deployment.
+      - uid: lab-critical-webhook
+        type: webhook
+        settings:
+          url: http://alert-webhook:8080/alerts
+          httpMethod: POST
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: warning-team
+    receivers:
+      - uid: lab-warning-email
+        type: email
+        settings:
+          addresses: team@observability-lab.local
+          singleEmail: false
+          subject: '[{{ .Status | toUpper }}][WARNING] {{ .GroupLabels.alertname }}'
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: info-digest
+    receivers:
+      - uid: lab-info-email
+        type: email
+        settings:
+          addresses: digest@observability-lab.local
+          # One email per group rather than per alert: information alerts are
+          # read in batches or not at all.
+          singleEmail: true
+          subject: '[INFO] {{ .GroupLabels.alertname }}'
+        # No resolved message. Nobody acted on the firing one, so telling them
+        # it stopped only doubles the volume.
+        disableResolveMessage: true
+
+  # The fallback. Reached only by a rule with no severity label, which means
+  # somebody wrote a rule and forgot one - so it is deliberately noisy.
+  - orgId: 1
+    name: default-email
+    receivers:
+      - uid: lab-default-email
+        type: email
+        settings:
+          addresses: team@observability-lab.local
+          subject: '[UNROUTED] {{ .GroupLabels.alertname }}'

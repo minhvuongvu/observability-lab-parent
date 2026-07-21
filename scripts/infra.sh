@@ -47,7 +47,31 @@ ensure_env() {
     echo "Created docker/compose/.env from .env.example."
     echo "It carries local-only placeholder credentials; review it before changing BIND_HOST."
     echo
+    return
   fi
+
+  # An existing .env is never overwritten - it holds local edits and, in a real
+  # setup, credentials. But it also goes stale: every step that adds a component
+  # adds keys to .env.example, and a .env written three steps ago is missing all
+  # of them. Compose substitutes an empty string for each and carries on, so the
+  # symptom is an exporter that cannot authenticate or a port published on :0 -
+  # neither of which points at the actual cause.
+  local declared present missing count
+  declared="$(grep -oE '^[A-Z][A-Z0-9_]*=' "${COMPOSE_DIR}/.env.example" | tr -d '=' | sort -u)"
+  present="$(grep -oE '^[A-Z][A-Z0-9_]*=' "${COMPOSE_DIR}/.env" | tr -d '=' | sort -u)"
+  missing="$(comm -23 <(echo "${declared}") <(echo "${present}"))"
+
+  [ -n "${missing}" ] || return 0
+
+  count="$(echo "${missing}" | wc -l | tr -d ' ')"
+  echo "WARNING: docker/compose/.env is missing ${count} key(s) that .env.example defines:"
+  echo "${missing}" | paste -sd' ' - | fold -s -w 74 | sed 's/^/    /'
+  echo
+  echo "  Compose substitutes an empty string for each, so the stack starts and"
+  echo "  misbehaves rather than failing: an exporter with no password, a port"
+  echo "  published on :0. Copy the missing blocks across from .env.example, or"
+  echo "  delete .env to regenerate it."
+  echo
 }
 
 # Names the compose files explicitly rather than relying on COMPOSE_FILE from
@@ -58,6 +82,7 @@ compose() {
   (cd "${COMPOSE_DIR}" && docker compose \
       -f docker-compose.yml \
       -f docker-compose.platform.yml \
+      -f docker-compose.observability.yml \
       "$@")
 }
 
@@ -115,7 +140,6 @@ EOF
 }
 
 cmd_up() {
-  ensure_env
   echo "Starting the infrastructure stack."
   echo "First run pulls several GB of images and initialises Oracle; expect a few minutes."
   echo
@@ -175,6 +199,9 @@ Observability
   Jaeger UI             http://${host}:${JAEGER_UI_PORT:-16686}
   Zipkin UI             http://${host}:${ZIPKIN_PORT:-9411}
   Pyroscope             http://${host}:${PYROSCOPE_PORT:-4040}
+  Alertmanager          http://${host}:${ALERTMANAGER_PORT:-9093}
+  Mailpit (alert email) http://${host}:${MAILPIT_UI_PORT:-8025}
+  Alert webhook sink    http://${host}:${ALERT_WEBHOOK_PORT:-8099}
   OTLP (grpc/http)      ${host}:${OTLP_GRPC_PORT:-4317} / ${host}:${OTLP_HTTP_PORT:-4318}
   OpenSearch Dashboards http://${host}:${OPENSEARCH_DASHBOARDS_PORT:-5601}   (profile: search)
   Kibana                http://${host}:${KIBANA_PORT:-5602}   (profile: search)
@@ -213,6 +240,10 @@ main() {
   esac
 
   require_docker
+  # Every command below shells out to compose, and compose reads .env. Checking
+  # once here means a stale .env is reported whichever way the stack is touched,
+  # rather than only on `up`.
+  ensure_env
 
   case "${cmd}" in
     up)      cmd_up ;;
@@ -221,8 +252,8 @@ main() {
     restart) compose down --remove-orphans && cmd_up ;;
     ps)      compose ps ;;
     health)  cmd_health ;;
-    logs)    ensure_env; compose logs -f --tail=200 "$@" ;;
-    *)       ensure_env; compose "${cmd}" "$@" ;;
+    logs)    compose logs -f --tail=200 "$@" ;;
+    *)       compose "${cmd}" "$@" ;;
   esac
 }
 

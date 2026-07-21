@@ -60,6 +60,10 @@ services:
       KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME}
       KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      # Read-only role for postgres-exporter (step 16). Provisioned by the same
+      # init script, which runs only on an empty data directory.
+      MONITOR_DB_USER: ${MONITOR_DB_USER}
+      MONITOR_DB_PASSWORD: ${MONITOR_DB_PASSWORD}
     ports:
       - "${BIND_HOST}:${POSTGRES_PORT}:5432"
     volumes:
@@ -98,6 +102,10 @@ services:
       APP_USER_PASSWORD: ${INVENTORY_DB_PASSWORD}
       # Read by the init script; the app user lives in the pluggable database.
       ORACLE_PDB: ${ORACLE_PDB}
+      # Read-only user for oracledb_exporter (step 16), created in the PDB by
+      # the same init script - so only on first initialisation of the volume.
+      ORACLE_MONITOR_USER: ${ORACLE_MONITOR_USER}
+      ORACLE_MONITOR_PASSWORD: ${ORACLE_MONITOR_PASSWORD}
     ports:
       - "${BIND_HOST}:${ORACLE_PORT}:1521"
     volumes:

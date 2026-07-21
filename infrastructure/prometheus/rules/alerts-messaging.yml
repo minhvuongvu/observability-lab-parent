@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# Kafka alerts.
+#
+# Consumer lag is the signal with no equivalent anywhere else in this system:
+# every technical metric can be green while lag grows, because a consumer that
+# is merely slower than its producer is not failing at anything. It is the
+# asynchronous half's version of "orders accepted but not settled".
+#
+# Two thresholds on purpose. Lag that is growing is information; lag that is
+# large is a warning. Splitting them is what stops the useful one being tuned
+# out along with the noisy one.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-messaging-availability
+    interval: 30s
+    rules:
+
+      - alert: KafkaBrokerDown
+        # kafka_brokers is the count of brokers the exporter can see. Below one
+        # means the cluster is gone, which in a single-broker lab is the only
+        # value it can take.
+        expr: kafka_brokers < 1
+        for: 1m
+        labels:
+          severity: critical
+          category: messaging
+        annotations:
+          summary: "No Kafka broker is reachable"
+          description: "The exporter sees {{ $value }} broker(s)."
+          impact: "Order events stop being delivered. Orders are still accepted - the outbox holds them - and none are settled."
+          action: "docker compose ps kafka. The outbox will drain by itself once the broker returns; do not replay by hand."
+          runbook: "docs/Alerting.md#kafkabrokerdown"
+          dashboard: "http://localhost:3000/d/lab-kafka"
+
+  - name: lab-messaging-lag
+    interval: 30s
+    rules:
+
+      - alert: KafkaConsumerLagGrowing
+        # Informational. Lag rising off zero is normal under a burst, and this
+        # exists so that a later warning has a visible beginning rather than
+        # appearing from nowhere.
+        expr: |
+          sum by (consumergroup, topic) (kafka_consumergroup_lag) > 100
+        for: 5m
+        labels:
+          severity: info
+          category: messaging
+        annotations:
+          summary: "{{ $labels.consumergroup }} is behind on {{ $labels.topic }}"
+          description: "{{ $value }} messages behind the log end."
+          impact: "Settlement is delayed. Nothing is lost."
+          action: "None yet. If it keeps climbing the warning below will fire."
+          runbook: "docs/Alerting.md#kafkaconsumerlaggrowing"
+          dashboard: "http://localhost:3000/d/lab-kafka"
+
+      - alert: KafkaConsumerLagHigh
+        expr: |
+          sum by (consumergroup, topic) (kafka_consumergroup_lag) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          category: messaging
+        annotations:
+          summary: "{{ $labels.consumergroup }} is far behind on {{ $labels.topic }}"
+          description: "{{ $value }} messages behind, and not recovering."
+          impact: "Orders stay PENDING for as long as the backlog takes to drain."
+          action: "Is the consumer alive and not rebalancing? Then check whether its handler slowed down - Oracle first."
+          runbook: "docs/Alerting.md#kafkaconsumerlaghigh"
+          dashboard: "http://localhost:3000/d/lab-kafka"
+
+      - alert: KafkaConsumerGroupEmpty
+        # A consumer group with no members is not lagging - it has stopped
+        # entirely. Lag alone would not catch it quickly, because lag on a
+        # quiet topic stays flat whether anybody is consuming or not.
+        expr: kafka_consumergroup_members == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: messaging
+        annotations:
+          summary: "Consumer group {{ $labels.consumergroup }} has no members"
+          description: "No consumer is assigned to any partition of this group."
+          impact: "Nothing is consuming. Lag will grow silently from here."
+          action: "The consuming service is down or failed to join. Check its logs for a deserialisation failure at startup."
+          runbook: "docs/Alerting.md#kafkaconsumergroupempty"
+          dashboard: "http://localhost:3000/d/lab-kafka"
