@@ -31,6 +31,7 @@ is not part of this stack yet.
 | Tempo | `grafana/tempo:2.9.1` | 3200 | Trace store Grafana links to; derives service-graph metrics |
 | Jaeger | `jaegertracing/all-in-one:1.66.0` | 16686 | Trace UI, in-memory storage |
 | Zipkin | `openzipkin/zipkin:3.6.1` | 9411 | Trace UI, its own wire format |
+| Pyroscope | `grafana/pyroscope:1.16.0` | 4040 | Continuous profile store |
 | Grafana | `grafana/grafana:12.2.10` | 3000 | Dashboards; datasources provisioned from files |
 
 Three further containers run once and exit: `kafka-init` declares the topics, `minio-init` creates

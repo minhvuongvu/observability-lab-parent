@@ -461,7 +461,46 @@ services:
           memory: 384M
 
   # -------------------------------------------------------------------------
-  # Grafana - where the logs, metrics and traces are actually read.
+  # Pyroscope - continuous profiling.
+  #
+  # The fourth signal, and the one that answers a question the other three
+  # cannot: *which lines of code* burned the CPU, allocated the heap or held
+  # the locks. A metric says the service is slow; a trace says which span was
+  # slow; only a profile says which method inside it.
+  #
+  # "Continuous" is the important word. Traditional profiling means reproducing
+  # a problem under a profiler, which is exactly what cannot be done for the
+  # incident that happened at 03:00 last Tuesday. Sampling cheaply enough to
+  # leave running all the time means the profile already exists when it is
+  # needed.
+  # -------------------------------------------------------------------------
+  pyroscope:
+    image: ${PYROSCOPE_IMAGE}
+    container_name: lab-pyroscope
+    restart: unless-stopped
+    # Single-binary mode: ingester, distributor and querier in one process.
+    command: ["-config.file=/etc/pyroscope/pyroscope.yml"]
+    user: root
+    ports:
+      - "${BIND_HOST}:${PYROSCOPE_PORT}:4040"
+    volumes:
+      - ../../infrastructure/pyroscope/pyroscope.yml:/etc/pyroscope/pyroscope.yml:ro
+      - pyroscope-data:/data
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:4040/ready | grep -q ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 640M
+
+  # -------------------------------------------------------------------------
+  # Grafana - where the logs, metrics, traces and profiles are actually read.
   #
   # Datasources and dashboards are provisioned from files rather than clicked
   # in: a dashboard that exists only in someone's browser is not part of the
@@ -478,6 +517,8 @@ services:
       prometheus:
         condition: service_healthy
       tempo:
+        condition: service_started
+      pyroscope:
         condition: service_started
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
@@ -519,6 +560,8 @@ networks:
     driver: bridge
 
 volumes:
+  pyroscope-data:
+    name: lab-pyroscope-data
   tempo-data:
     name: lab-tempo-data
   prometheus-data:

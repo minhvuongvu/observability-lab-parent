@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Pyroscope - continuous profiling store.
+#
+# Single-binary mode: distributor, ingester, querier and compactor in one
+# process. Real deployments split them; one process is enough to exercise
+# ingestion, the query API and flame graphs, which is what the lab needs.
+#
+# Profiles are stored the same way Loki stores logs and Tempo stores traces:
+# a small index over labels, with the bulk compressed into blocks. The labels
+# here (service, environment, span_id) are therefore subject to exactly the
+# same cardinality rule as everywhere else in this platform.
+# ---------------------------------------------------------------------------
+
+target: all
+
+server:
+  http_listen_port: 4040
+  # Quieter than the default, which logs every successful push.
+  log_level: warn
+
+self_profiling:
+  # Pyroscope profiling itself. Cheap, and it is how you find out that the
+  # thing collecting the profiles has become the thing burning the CPU.
+  disable_push: false
+
+storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/blocks
+
+pyroscopedb:
+  data_path: /data
+  # How long a head block stays in memory before being flushed. Shorter means
+  # a profile is queryable sooner; longer compresses better.
+  max_block_duration: 30m
+
+limits:
+  # Guard rails, all for the same reason: a runaway agent uploading at full
+  # rate should degrade its own ingestion rather than fill the disk.
+  max_query_lookback: 168h        # a week, matching logs and traces
+  max_query_length: 24h
+  ingestion_rate_mb: 8
+  ingestion_burst_size_mb: 16
+  # Every distinct label combination is a series here too. Bounded so a label
+  # accidentally carrying a request id cannot multiply the series count without
+  # limit - the same mistake that would bring down Loki.
+  max_label_names_per_series: 20
+
+compactor:
+  data_dir: /data/compactor
+
+analytics:
+  # No usage reporting from a lab.
+  reporting_enabled: false

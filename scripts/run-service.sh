@@ -103,7 +103,7 @@ mkdir -p "${LOG_DIR}"
 # ---------------------------------------------------------------------------
 JAVA_AGENT_OPTS=()
 if [ "${OTEL_SDK_DISABLED:-false}" != "true" ]; then
-  AGENT_JAR="$("${SCRIPT_DIR}/otel-agent.sh")"
+  AGENT_JAR="$("${SCRIPT_DIR}/agents.sh" otel)"
   JAVA_AGENT_OPTS=(-javaagent:"${AGENT_JAR}")
 
   # Identity. Matches the service/environment/version on every log line and
@@ -134,6 +134,67 @@ if [ "${OTEL_SDK_DISABLED:-false}" != "true" ]; then
   export OTEL_INSTRUMENTATION_LOGBACK_MDC_ENABLED=true
   export OTEL_INSTRUMENTATION_COMMON_MDC_TRACE_ID_KEY=trace_id
   export OTEL_INSTRUMENTATION_COMMON_MDC_SPAN_ID_KEY=span_id
+
+  # Pyroscope's OpenTelemetry extension, loaded *by* the OTel agent rather than
+  # as a third -javaagent. It stamps the active span id onto the profiling
+  # labels, which is what turns "this span was slow" into "and here is the
+  # flame graph of the CPU it burned". Without it, traces and profiles are two
+  # unrelated views of the same process.
+  if [ "${PYROSCOPE_ENABLED:-true}" = "true" ]; then
+    PYROSCOPE_OTEL_JAR="$("${SCRIPT_DIR}/agents.sh" pyroscope-otel)"
+    export OTEL_JAVAAGENT_EXTENSIONS="${PYROSCOPE_OTEL_JAR}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Continuous profiling.
+#
+# A second agent, wrapping async-profiler. It answers the question neither a
+# trace nor a metric can: *which lines of code* were burning the CPU, allocating
+# the heap or holding the locks - continuously, in production, at a sampling
+# cost low enough to leave running.
+#
+# Set PYROSCOPE_ENABLED=false to run without it.
+# ---------------------------------------------------------------------------
+if [ "${PYROSCOPE_ENABLED:-true}" = "true" ]; then
+  PYROSCOPE_JAR="$("${SCRIPT_DIR}/agents.sh" pyroscope)"
+  JAVA_AGENT_OPTS+=(-javaagent:"${PYROSCOPE_JAR}")
+
+  export PYROSCOPE_APPLICATION_NAME="${SERVICE}"
+  export PYROSCOPE_SERVER_ADDRESS="${PYROSCOPE_SERVER_ADDRESS:-http://${HOST}:${PYROSCOPE_PORT:-4040}}"
+
+  # JFR rather than the single-event collapsed format. This is the setting that
+  # makes all four profile types available at once: with the collapsed format
+  # the agent can record exactly one event, so choosing CPU means giving up
+  # allocation and lock data entirely.
+  export PYROSCOPE_FORMAT=jfr
+  # The names are PYROSCOPE_PROFILER_*, not PYROSCOPE_PROFILING_*. Getting them
+  # wrong is silent: the agent starts, uploads happily, and delivers CPU
+  # profiles only - the allocation and lock views simply never appear.
+  #
+  # itimer rather than cpu: it samples on a wall-clock timer, so it also
+  # attributes time spent blocked, which `cpu` (perf events) does not. On a
+  # service that spends most of its life waiting on a database, `cpu` produces
+  # a flame graph of almost nothing.
+  export PYROSCOPE_PROFILER_EVENT="${PYROSCOPE_PROFILER_EVENT:-itimer}"
+  # Sample an allocation profile every 512 KB allocated, and any lock held for
+  # more than 10 ms. Both are thresholds, not switches: sampling every
+  # allocation would cost more than the application.
+  export PYROSCOPE_PROFILER_ALLOC="${PYROSCOPE_PROFILER_ALLOC:-512k}"
+  export PYROSCOPE_PROFILER_LOCK="${PYROSCOPE_PROFILER_LOCK:-10ms}"
+  # Live-object profiling, which is a different question from allocation.
+  # `alloc` answers "what allocated the most", and most of that is short-lived
+  # garbage the collector reclaims without cost. `alloc_live` answers "what is
+  # still holding memory" - which is the one that finds a leak.
+  export PYROSCOPE_ALLOC_LIVE="${PYROSCOPE_ALLOC_LIVE:-true}"
+
+  # Labels, matching the tag vocabulary used by logs, metrics and traces so a
+  # profile can be filtered by the same words as everything else.
+  export PYROSCOPE_LABELS="service=${SERVICE},environment=${OTEL_ENVIRONMENT:-local}"
+
+  # How often profiles are shipped. Ten seconds keeps a flame graph responsive
+  # while looking at something happening now, without a request per second.
+  export PYROSCOPE_UPLOAD_INTERVAL="${PYROSCOPE_UPLOAD_INTERVAL:-10s}"
 fi
 
 JAR="$(find "${REPO_ROOT}/services/${SERVICE}/target" -maxdepth 1 -name "${SERVICE}-*.jar" \
@@ -156,6 +217,11 @@ if [ "${OTEL_SDK_DISABLED:-false}" != "true" ]; then
   echo "  traces    ${OTEL_EXPORTER_OTLP_ENDPOINT} (otlp/${OTEL_EXPORTER_OTLP_PROTOCOL})"
 else
   echo "  traces    disabled (OTEL_SDK_DISABLED=true)"
+fi
+if [ "${PYROSCOPE_ENABLED:-true}" = "true" ]; then
+  echo "  profiles  ${PYROSCOPE_SERVER_ADDRESS} (cpu, alloc, lock)"
+else
+  echo "  profiles  disabled (PYROSCOPE_ENABLED=false)"
 fi
 echo
 

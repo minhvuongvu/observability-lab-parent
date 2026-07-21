@@ -5,7 +5,7 @@
 # browser session is not part of the system: it cannot be reviewed, it is lost
 # when the volume is recreated, and nobody else's Grafana has it.
 #
-# The profiles datasource arrives with step 13.
+# All four signals are provisioned here: metrics, logs, traces and profiles.
 # ---------------------------------------------------------------------------
 apiVersion: 1
 
@@ -158,6 +158,17 @@ datasources:
       search:
         hide: false
 
+      # Trace -> profile. Pyroscope's OpenTelemetry extension stamps the span id
+      # onto the profiling labels, so a slow span links straight to the flame
+      # graph of the CPU it actually burned. This is the link that closes the
+      # loop between the four signals.
+      tracesToProfiles:
+        datasourceUid: pyroscope
+        profileTypeId: 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
+        tags:
+          - key: service.name
+            value: service
+
   # -------------------------------------------------------------------------
   # Jaeger and Zipkin receive the same spans from the collector. Provisioned so
   # one trace can be opened in all three and compared - which is the only
@@ -188,3 +199,20 @@ datasources:
         spanStartTimeShift: -5m
         spanEndTimeShift: 5m
         filterByTraceID: true
+
+  # -------------------------------------------------------------------------
+  # Pyroscope - continuous profiles.
+  #
+  # The signal that says which *lines of code* burned the CPU, allocated the
+  # heap or held the locks. Linked from Tempo above, so a slow span leads to
+  # the flame graph for that span rather than to a whole-process average.
+  # -------------------------------------------------------------------------
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    uid: pyroscope
+    access: proxy
+    url: http://pyroscope:4040
+    editable: false
+    jsonData:
+      # Jumps from a flame graph back to the traces for the same service.
+      profileTypeId: 'process_cpu:cpu:nanoseconds:cpu:nanoseconds'
