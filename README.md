@@ -224,9 +224,11 @@ connects to PostgreSQL, Redis and Kafka.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/v1/orders` | Place an order. Returns 201 and publishes `order-created`. |
+| `POST /api/v1/orders` | Place an order. Returns 201 `PENDING` and enqueues `order-created` in the outbox. |
 | `GET /api/v1/orders/{orderNumber}` | Read one order, served from Redis when warm. |
 | `GET /api/v1/orders` | List orders, filterable by `customerId` and `status`, paginated. |
+| `POST /api/v1/orders/availability` | Advisory stock check. Calls Inventory over HTTP, resolved through Consul. Reserves nothing. |
+| `GET /api/v1/orders/{orderNumber}/invoice` | A short-lived signed URL to the invoice in MinIO. Rebuilds it if absent. |
 | `POST /api/v1/orders/{orderNumber}/cancel` | Cancel. 422 if the status does not allow it. |
 | `DELETE /api/v1/orders/{orderNumber}` | Remove a cancelled or rejected order. |
 | `GET /actuator/health` | Health, with `liveness` and `readiness` groups. |
@@ -294,7 +296,17 @@ curl -X POST http://localhost/api/v1/orders \
 
 # The Inventory Service consumed order-created and reserved the units
 curl http://localhost/api/v1/stock/SKU-1 -H "Authorization: Bearer $TOKEN"
+
+# ...and answered on inventory-updated, so the order is no longer PENDING
+curl http://localhost/api/v1/orders/ORD-... -H "Authorization: Bearer $TOKEN"
+
+# The invoice was uploaded to MinIO; this hands back a signed, expiring link to it
+curl http://localhost/api/v1/orders/ORD-.../invoice -H "Authorization: Bearer $TOKEN"
 ```
+
+The `201` means **accepted**, not fulfilled: the order is `PENDING` until the Inventory Service
+decides, which is what lets orders be taken while Inventory is down. It becomes `CONFIRMED` or
+`REJECTED` a moment later. [docs/Kafka.md](docs/Kafka.md) traces the whole round trip.
 
 Without the header the edge answers `401`; `DELETE` with `alice`'s token answers `403`, with
 `manager`'s it succeeds. The full auth model is in [docs/Keycloak.md](docs/Keycloak.md).
@@ -339,10 +351,13 @@ by service and environment.
 | [docs/Infrastructure.md](docs/Infrastructure.md) | What runs in Docker, network topology, init scripts, healthchecks, data lifecycle, troubleshooting |
 | [docs/Keycloak.md](docs/Keycloak.md) | Authentication: the realm, clients, roles and users, the JWT flow, and how the gateway and services verify a token |
 | [docs/Consul.md](docs/Consul.md) | Service discovery and configuration: registration, health checks, and reading configuration from Consul KV |
+| [docs/Kafka.md](docs/Kafka.md) | Event-driven integration: topics, consumer groups, the transactional outbox, idempotency, retry, backoff and the dead-letter topic |
+| [docs/Redis.md](docs/Redis.md) | Caching: what is cached and what deliberately is not, key layout, TTL, eviction and after-commit invalidation |
+| [docs/MinIO.md](docs/MinIO.md) | Object storage: the invoice bucket, least-privilege credentials, upload timing, object naming and signed URLs |
 
-Deployment, Observability, Logging, Metrics, Tracing, Profiling, Kafka, Redis, Gateway, MinIO,
-Runbook, Troubleshooting, Performance and Security guides are produced by the steps that introduce
-each capability, and consolidated in step 16.
+Deployment, Observability, Logging, Metrics, Tracing, Profiling, Gateway, Runbook, Troubleshooting,
+Performance and Security guides are produced by the steps that introduce each capability, and
+consolidated in step 16.
 
 ---
 
@@ -361,7 +376,7 @@ documented before the next one starts.
 | 06 | API gateway: Kong routing, rate limiting, JWT plugin; Nginx | **Complete** |
 | 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | **Complete** |
 | 08 | Service discovery: Consul registration, health, KV configuration | **Complete** |
-| 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | Planned |
+| 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | **Complete** |
 | 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | Planned |
 | 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | Planned |
 | 12 | Tracing: OpenTelemetry SDK and Collector, Tempo, Jaeger, Zipkin | Planned |

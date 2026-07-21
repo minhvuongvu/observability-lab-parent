@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -74,13 +76,18 @@ class StockApplicationServiceTest {
             assertThat(result.outcome()).isEqualTo(ReservationResult.Outcome.RESERVED);
             assertThat(widget.getReservedQuantity()).isEqualTo(3);
             assertThat(gizmo.getReservedQuantity()).isEqualTo(2);
-            verify(processedEvents).markProcessed(EVENT_ID, "order-created");
+            verify(processedEvents).markProcessed(EVENT_ID, "order-created",
+                    new ProcessedEventRepository.RecordedOutcome(
+                            ReservationResult.Outcome.RESERVED, null));
         }
 
         @Test
         @DisplayName("ignores a redelivery of an event it has already applied")
         void isIdempotent() {
             when(processedEvents.hasProcessed(EVENT_ID)).thenReturn(true);
+            when(processedEvents.outcomeOf(EVENT_ID)).thenReturn(Optional.of(
+                    new ProcessedEventRepository.RecordedOutcome(
+                            ReservationResult.Outcome.RESERVED, null)));
 
             ReservationResult result = service.reserveForOrder(EVENT_ID, ORDER,
                     List.of(new ReservationLine("SKU-A", 3)));
@@ -90,6 +97,37 @@ class StockApplicationServiceTest {
             // that quietly drifts every time a consumer restarts at the wrong moment.
             verify(stockLevels, never()).findAllByProductSkuIn(any());
             verify(stockLevels, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("replays the original decision on a redelivery, so the settlement can be re-announced")
+        void redeliveryReplaysTheRecordedSettlement() {
+            when(processedEvents.hasProcessed(EVENT_ID)).thenReturn(true);
+            when(processedEvents.outcomeOf(EVENT_ID)).thenReturn(Optional.of(
+                    new ProcessedEventRepository.RecordedOutcome(
+                            ReservationResult.Outcome.REJECTED, "SKU-A (requested 9, available 1)")));
+
+            ReservationResult result = service.reserveForOrder(EVENT_ID, ORDER,
+                    List.of(new ReservationLine("SKU-A", 9)));
+
+            // The stock is untouched, but the answer survives: without this the Order Service would
+            // never hear the outcome of an event whose first announcement failed.
+            assertThat(result.outcome()).isEqualTo(ReservationResult.Outcome.ALREADY_PROCESSED);
+            assertThat(result.settlement()).isEqualTo(ReservationResult.Outcome.REJECTED);
+            assertThat(result.shortages()).singleElement().asString().contains("SKU-A");
+            assertThat(result.hasSettlement()).isTrue();
+        }
+
+        @Test
+        @DisplayName("has nothing to announce for a redelivery recorded before outcomes were stored")
+        void redeliveryWithoutRecordedOutcomeAnnouncesNothing() {
+            when(processedEvents.hasProcessed(EVENT_ID)).thenReturn(true);
+            when(processedEvents.outcomeOf(EVENT_ID)).thenReturn(Optional.empty());
+
+            ReservationResult result = service.reserveForOrder(EVENT_ID, ORDER,
+                    List.of(new ReservationLine("SKU-A", 3)));
+
+            assertThat(result.hasSettlement()).isFalse();
         }
 
         @Test
@@ -134,7 +172,10 @@ class StockApplicationServiceTest {
 
             // Redelivering would produce the same shortage every time; marking it handled is what
             // stops the partition being blocked by an answer that will never change.
-            verify(processedEvents).markProcessed(EVENT_ID, "order-created");
+            verify(processedEvents).markProcessed(eq(EVENT_ID), eq("order-created"),
+                    argThat(recorded ->
+                            recorded.outcome() == ReservationResult.Outcome.REJECTED
+                                    && recorded.detail().contains("SKU-A")));
         }
     }
 

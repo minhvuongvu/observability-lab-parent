@@ -1,5 +1,8 @@
 package com.observability.lab.order.api;
 
+import com.observability.lab.order.application.AvailabilityService;
+import com.observability.lab.order.application.AvailabilityView;
+import com.observability.lab.order.application.InvoiceLink;
 import com.observability.lab.order.application.OrderApplicationService;
 import com.observability.lab.order.application.OrderView;
 import com.observability.lab.order.domain.OrderStatus;
@@ -12,6 +15,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
+import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -45,9 +49,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class OrderController {
 
     private final OrderApplicationService orders;
+    private final AvailabilityService availability;
 
-    public OrderController(OrderApplicationService orders) {
+    public OrderController(OrderApplicationService orders, AvailabilityService availability) {
         this.orders = orders;
+        this.availability = availability;
     }
 
     @PostMapping
@@ -93,6 +99,29 @@ public class OrderController {
         // and its JSON is not stable across versions, which makes it a poor public contract.
         return ApiResponse.success(PageResponse.of(
                 page.getContent(), page.getNumber(), page.getSize(), page.getTotalElements()));
+    }
+
+    @PostMapping("/availability")
+    @Operation(summary = "Check stock before placing an order",
+            description = "Advisory only. Calls the Inventory Service synchronously — resolved "
+                    + "through the Consul registry — and reports what is available right now. "
+                    + "Nothing is reserved: the authoritative decision is made asynchronously after "
+                    + "the order is placed, so a 'sufficient' answer here can still be overtaken.")
+    public ApiResponse<List<AvailabilityView>> availability(
+            @Valid @RequestBody CreateOrderRequest request) {
+
+        return ApiResponse.success(availability.check(request.toCommand().items()));
+    }
+
+    @GetMapping("/{orderNumber}/invoice")
+    @Operation(summary = "Get a link to the order's invoice",
+            description = "Returns a short-lived signed URL to the invoice in object storage rather "
+                    + "than the document itself, so the download never passes through this service. "
+                    + "The invoice is rebuilt on the spot if it is not already archived.")
+    public ApiResponse<InvoiceLink> invoice(
+            @PathVariable @NotBlank @Size(max = 40) String orderNumber) {
+
+        return ApiResponse.success(orders.invoiceFor(orderNumber));
     }
 
     @PostMapping("/{orderNumber}/cancel")

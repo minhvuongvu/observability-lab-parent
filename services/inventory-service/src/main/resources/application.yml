@@ -143,6 +143,17 @@ spring:
         max.poll.interval.ms: 300000
         isolation.level: read_committed
       max-poll-records: 50
+    producer:
+      # Serializers are set as instances in KafkaProducerConfiguration.
+      # Durability over throughput: a settlement that is acknowledged and then
+      # lost leaves an order PENDING with its stock reserved.
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
     listener:
       # Commit the offset after each record, so a crash replays at most one.
       ack-mode: record
@@ -169,6 +180,11 @@ app:
   kafka:
     topics:
       order-created: order-created
+      inventory-updated: inventory-updated
+      # Records that exhausted their retries. Inspected by a human, never
+      # consumed automatically - a poison message replayed on a loop is how a
+      # dead letter queue becomes an outage.
+      dead-letter: dead-letter-topic
 
   cache:
     # Shorter than the Order Service's: stock changes far more often than an

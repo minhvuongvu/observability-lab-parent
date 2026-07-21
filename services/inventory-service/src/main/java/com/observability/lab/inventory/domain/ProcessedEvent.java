@@ -37,13 +37,40 @@ public class ProcessedEvent {
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
 
+    /**
+     * What was decided, so a redelivery can re-announce it.
+     *
+     * <p>Without this the row says only "handled", and a settlement whose publish failed could never
+     * be replayed — the order would stay PENDING while its stock sat reserved. Null only for rows
+     * written before V2.
+     */
+    @Column(name = "outcome", length = 20)
+    private String outcome;
+
+    /** Why, when the decision was a refusal. Null otherwise. */
+    @Column(name = "outcome_detail", length = 1000)
+    private String outcomeDetail;
+
     /** For JPA only. */
     protected ProcessedEvent() {}
 
-    public ProcessedEvent(String eventId, String eventType) {
+    public ProcessedEvent(String eventId, String eventType, String outcome, String outcomeDetail) {
         this.eventId = eventId;
         this.eventType = eventType;
+        this.outcome = outcome;
+        this.outcomeDetail = outcomeDetail == null ? null
+                : outcomeDetail.substring(0, Math.min(outcomeDetail.length(), MAX_DETAIL_LENGTH));
         this.processedAt = Instant.now();
+    }
+
+    private static final int MAX_DETAIL_LENGTH = 1_000;
+
+    public String getOutcome() {
+        return outcome;
+    }
+
+    public String getOutcomeDetail() {
+        return outcomeDetail;
     }
 
     public String getEventId() {

@@ -112,8 +112,22 @@ The Consul UI at <http://localhost:8500> shows the same: **Services** for the ca
 - **ACLs are off** (`default_policy = allow`) and script checks are disabled — a single-node
   loopback-bound lab, kept deliberately simple to teach the mechanics.
 
-## 7. What this step intentionally does not do
+## 7. Discovery in use
 
-The Order Service's Feign client still targets Inventory by an explicit URL. Resolving
-`inventory-service` *through the registry* (dropping the URL) is a natural next use of discovery, but
-it belongs with the integration step, not here — this step's job is registration, health and KV.
+Step 08 made the services *register*. Step 09 made something *look them up*: the Order Service's
+Feign client declares `@FeignClient(name = "inventory-service")` with no URL, and Spring Cloud
+LoadBalancer resolves it through this registry. `POST /api/v1/orders/availability` is the path that
+exercises it — see [Kafka.md](Kafka.md) for how the asynchronous half of the same integration works.
+
+Two things about registration turned out to matter only once something resolved it:
+
+- **The advertised address must work from both sides.** Consul health-checks the service from inside
+  its container, and other services reach it from wherever they run. `host.docker.internal` satisfies
+  only the first — it does not resolve on the host — so discovery handed callers an address they
+  could not connect to. `./scripts/run-service.sh` therefore sets `SERVICE_HOSTNAME` to the machine's
+  own LAN address, which satisfies both, and falls back to `host.docker.internal` when it cannot
+  determine one. Once the services are containerised this becomes their compose service name.
+- **`query-passing: true`.** Without it the catalog returns every registered instance including the
+  ones Consul already knows are failing, which makes the health check decorative. With it, an
+  instance is routed to only while its check passes — and a service that has just started is
+  correctly invisible until its first check succeeds.

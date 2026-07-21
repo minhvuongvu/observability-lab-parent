@@ -9,44 +9,38 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
-import org.springframework.kafka.support.serializer.JsonSerializer;
 
 /**
  * Producer wiring for order events.
  *
- * <p>Exists for one reason: to make the serializer use the application's own {@link ObjectMapper}.
+ * <p>Values are sent as strings, not objects, because this service publishes exclusively through the
+ * transactional outbox: the payload was already rendered to JSON — with the application's own
+ * {@link ObjectMapper} — when the row was written, inside the producing transaction. The relay's job
+ * is to put those exact bytes on the wire.
  *
- * <p>Configuring {@code value-serializer} by class name leaves Kafka to instantiate
- * {@link JsonSerializer} through its no-argument constructor, which builds a private mapper. That
- * mapper registers the Java time module but leaves {@code WRITE_DATES_AS_TIMESTAMPS} enabled, so an
- * {@code Instant} goes onto the wire as {@code 1784537424.040746} while the same field in an HTTP
- * response renders as {@code "2026-07-20T08:50:24.040746Z"}.
+ * <p>A JSON-serialising template here would re-encode an already-encoded string, and consumers would
+ * receive a quoted string containing escaped JSON rather than the document itself.
  *
- * <p>One service, two representations of the same instant, is a bug waiting for whoever writes the
- * consumer. Passing Boot's configured mapper makes both channels agree.
+ * <p>Rendering upstream also keeps a serialisation failure inside the transaction that caused it,
+ * where it can abort the order, rather than surfacing minutes later on a scheduler thread with the
+ * order already committed.
  */
 @Configuration(proxyBeanMethods = false)
 public class KafkaConfiguration {
 
     @Bean
-    public ProducerFactory<String, Object> orderProducerFactory(
-            KafkaProperties kafkaProperties, SslBundles sslBundles, ObjectMapper objectMapper) {
-
-        JsonSerializer<Object> valueSerializer = new JsonSerializer<>(objectMapper);
-        // No producer class name in the record headers. Embedding it would force every consumer to
-        // own a class of that exact fully-qualified name; the topic and its documented schema are
-        // the contract instead.
-        valueSerializer.setAddTypeInfo(false);
+    public ProducerFactory<String, String> orderProducerFactory(
+            KafkaProperties kafkaProperties, SslBundles sslBundles) {
 
         return new DefaultKafkaProducerFactory<>(
                 kafkaProperties.buildProducerProperties(sslBundles),
                 new StringSerializer(),
-                valueSerializer);
+                new StringSerializer());
     }
 
     @Bean
-    public KafkaTemplate<String, Object> kafkaTemplate(
-            ProducerFactory<String, Object> orderProducerFactory) {
+    public KafkaTemplate<String, String> kafkaTemplate(
+            ProducerFactory<String, String> orderProducerFactory) {
         return new KafkaTemplate<>(orderProducerFactory);
     }
 }

@@ -1,0 +1,144 @@
+package com.observability.lab.order.infrastructure.messaging;
+
+import com.observability.lab.order.domain.OutboxEvent;
+import com.observability.lab.order.infrastructure.persistence.OutboxEventJpaRepository;
+import com.observability.lab.shared.logging.LogContext;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * Moves durable outbox rows onto Kafka.
+ *
+ * <p>The other half of the outbox pattern. {@link OutboxOrderEventPublisher} guarantees the event
+ * exists; this guarantees it eventually reaches the broker. Because the row survives, a failure here
+ * is never data loss — the next run picks it up again. That is what turns "the broker was down when
+ * the order was placed" from a lost event into a few seconds of delay.
+ *
+ * <p>Delivery is therefore <strong>at-least-once</strong>: a send that succeeds but whose
+ * acknowledgement is lost is retried, and the consumer sees the event twice. Consumers de-duplicate
+ * on {@code eventId} — see the Inventory Service's {@code ProcessedEvent}. Exactly-once across a
+ * database and a broker is not available at any price worth paying here.
+ */
+@Component
+public class OutboxRelay {
+
+    private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
+
+    /**
+     * How long a single send may take before the relay gives up on it for this run.
+     *
+     * <p>Bounded because the batch is claimed under a row lock: an unbounded wait would hold those
+     * rows, and the database connection, for as long as the broker stays unreachable.
+     */
+    private static final Duration SEND_TIMEOUT = Duration.ofSeconds(10);
+
+    private final OutboxEventJpaRepository outbox;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final int batchSize;
+    private final Duration retention;
+
+    public OutboxRelay(OutboxEventJpaRepository outbox, KafkaTemplate<String, String> kafkaTemplate,
+            @Value("${app.outbox.batch-size}") int batchSize,
+            @Value("${app.outbox.retention}") Duration retention) {
+        this.outbox = outbox;
+        this.kafkaTemplate = kafkaTemplate;
+        this.batchSize = batchSize;
+        this.retention = retention;
+    }
+
+    /**
+     * Drains a batch of pending events.
+     *
+     * <p>{@code fixedDelay}, not {@code fixedRate}: the delay is measured from the end of the
+     * previous run, so a slow run against a struggling broker cannot cause runs to overlap and
+     * contend for the same rows.
+     *
+     * <p>Transactional so the claim lock, the sends and the resulting status updates are one unit.
+     */
+    @Scheduled(fixedDelayString = "${app.outbox.poll-interval}")
+    @Transactional
+    public void publishPending() {
+        List<OutboxEvent> batch = outbox.claimUnpublished(PageRequest.of(0, batchSize));
+        if (batch.isEmpty()) {
+            return;
+        }
+
+        int published = 0;
+        for (OutboxEvent event : batch) {
+            if (publish(event)) {
+                published++;
+            }
+        }
+
+        if (published < batch.size()) {
+            log.warn("Outbox relay published {} of {} claimed event(s); {} still pending overall",
+                    published, batch.size(), outbox.countUnpublished());
+        } else {
+            log.debug("Outbox relay published {} event(s)", published);
+        }
+    }
+
+    /**
+     * Sends one event and records the outcome on its row.
+     *
+     * <p>Waits for the broker's acknowledgement rather than firing and forgetting. The whole purpose
+     * of the row is to know whether the send actually happened, and a template future that has not
+     * completed cannot answer that.
+     */
+    private boolean publish(OutboxEvent event) {
+        try (var scope = LogContext.with("event_id", event.getEventId())
+                .and("order_number", event.getMessageKey())) {
+            try {
+                var result = kafkaTemplate
+                        .send(event.getTopic(), event.getMessageKey(), event.getPayload())
+                        .get(SEND_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+
+                event.markPublished();
+                log.debug("Relayed {} to {}-{}@{}", event.getEventType(),
+                        result.getRecordMetadata().topic(),
+                        result.getRecordMetadata().partition(),
+                        result.getRecordMetadata().offset());
+                return true;
+
+            } catch (InterruptedException interrupted) {
+                // Restoring the flag and stopping is the only correct response: swallowing it would
+                // leave a thread that has been asked to stop running on regardless.
+                Thread.currentThread().interrupt();
+                event.markFailed("Interrupted while publishing.");
+                return false;
+
+            } catch (Exception failure) {
+                event.markFailed(failure.toString());
+                log.warn("Outbox delivery of {} failed (attempt {}); it stays queued and will be retried",
+                        event.getEventType(), event.getAttempts(), failure);
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Prunes delivered events.
+     *
+     * <p>Runs far less often than the relay: this is housekeeping, and a delete that scans the table
+     * has no business competing with the delivery path for locks.
+     */
+    @Scheduled(fixedDelayString = "${app.outbox.cleanup-interval}",
+            initialDelayString = "${app.outbox.cleanup-interval}")
+    @Transactional
+    public void pruneDelivered() {
+        int removed = outbox.deletePublishedBefore(Instant.now().minus(retention));
+        if (removed > 0) {
+            log.info("Pruned {} delivered outbox event(s) older than {}", removed, retention);
+        }
+    }
+}

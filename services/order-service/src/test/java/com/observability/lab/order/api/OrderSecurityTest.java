@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.observability.lab.order.application.AvailabilityService;
 import com.observability.lab.order.application.OrderApplicationService;
 import com.observability.lab.shared.autoconfigure.ResourceServerAutoConfiguration;
 import java.util.List;
@@ -53,6 +54,12 @@ class OrderSecurityTest {
 
     @MockitoBean
     private OrderApplicationService orders;
+
+    // Backs the availability pre-check endpoint. Mocked rather than exercised here: what it does is
+    // make a real HTTP call to another service, which belongs in its own test, not in a slice that
+    // is about this controller's request binding and status codes.
+    @MockitoBean
+    private AvailabilityService availability;
 
     @Test
     @DisplayName("refuses an unauthenticated request with 401")

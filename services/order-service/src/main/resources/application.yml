@@ -106,6 +106,11 @@ spring:
         hostname: ${SERVICE_HOSTNAME:host.docker.internal}
         health-check-path: /actuator/health
         health-check-interval: 10s
+        # Only instances whose health check is passing are returned to the load
+        # balancer. Without this the catalog hands back every registered
+        # instance including the ones Consul already knows are failing, which
+        # makes the health check decorative.
+        query-passing: true
         instance-id: ${spring.application.name}:${server.port}
         tags:
           - observability-lab
@@ -138,6 +143,25 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      # Platform convention <service>-<topic>-group. The group id is the unit of
+      # offset tracking; changing it silently replays from auto-offset-reset.
+      group-id: order-inventory-updated-group
+      # A settlement this service never saw would leave an order PENDING
+      # forever, so a new group reads the topic from the beginning.
+      auto-offset-reset: earliest
+      # Offsets are committed by the container after a record is handled, not on
+      # a timer, so a crash cannot acknowledge unprocessed records.
+      enable-auto-commit: false
+      # Deserializers are set as instances in KafkaConsumerConfiguration.
+      properties:
+        isolation.level: read_committed
+      max-poll-records: 50
+    listener:
+      # Commit after each record, so a crash replays at most one.
+      ack-mode: record
+      # One thread per partition of inventory-updated.
+      concurrency: 3
     producer:
       # Serializers are set as instances in KafkaConfiguration, not by class name
       # here: naming the class lets Kafka build it with a private ObjectMapper
@@ -171,17 +195,50 @@ app:
   kafka:
     topics:
       order-created: order-created
+      inventory-updated: inventory-updated
+      # Settlements that exhausted their retries. Inspected by a human, never
+      # consumed automatically - a poison message replayed on a loop is how a
+      # dead letter queue becomes an outage.
+      dead-letter: dead-letter-topic
+
+  outbox:
+    # Small enough that one run is quick and the row locks are held briefly,
+    # large enough to drain a burst in a few passes.
+    batch-size: 100
+    poll-interval: 1s
+    # Delivered rows are history. Kept long enough to answer "was this sent?"
+    # after an incident, then pruned so the table stays proportional to traffic
+    # rather than to uptime.
+    retention: 24h
+    cleanup-interval: 1h
 
   cache:
     # Short enough that a stale order is a minor annoyance rather than a
     # correctness problem, long enough to absorb a read-heavy burst.
     orders-ttl: 10m
 
+  storage:
+    minio:
+      endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+      # The least-privilege bucket user provisioned by minio-init, never the
+      # MinIO root account. Secrets come from the environment, not from here.
+      access-key: ${MINIO_ACCESS_KEY:lab-invoice-app}
+      secret-key: ${MINIO_SECRET_KEY:localdev_minio_app_pw}
+      bucket: ${MINIO_INVOICE_BUCKET:invoices}
+
+  invoice:
+    # Long enough for a person to follow the link, short enough that a URL
+    # leaked through a log or a referrer header stops working quickly.
+    url-validity: 15m
+
   clients:
     inventory:
-      # Timeouts live under spring.cloud.openfeign above, which is where Feign
-      # reads them from without a custom Options bean.
-      url: ${INVENTORY_SERVICE_URL:http://localhost:8082}
+      # No URL. The Feign client names 'inventory-service' and Spring Cloud
+      # LoadBalancer resolves it through the Consul registry, so instances can
+      # move or scale without a change here. Timeouts live under
+      # spring.cloud.openfeign above, which is where Feign reads them from
+      # without a custom Options bean.
+      service-id: inventory-service
 
 # Surfaced at /actuator/info (management.info.env.enabled below). The default
 # names this file; a value seeded into Consul KV (config/application/data)

@@ -33,10 +33,13 @@ public class OrderCreatedListener {
 
     private final StockApplicationService stock;
     private final ServiceIdentity identity;
+    private final InventoryUpdatedPublisher settlements;
 
-    public OrderCreatedListener(StockApplicationService stock, ServiceIdentity identity) {
+    public OrderCreatedListener(StockApplicationService stock, ServiceIdentity identity,
+            InventoryUpdatedPublisher settlements) {
         this.stock = stock;
         this.identity = identity;
+        this.settlements = settlements;
     }
 
     @KafkaListener(
@@ -62,9 +65,22 @@ public class OrderCreatedListener {
             log.info("Handled {} for order '{}' from partition {} offset {}: {}",
                     EVENT_TYPE, message.orderNumber(), partition, offset, result.outcome());
 
-            // Telling the Order Service the outcome — publishing inventory-updated so a PENDING
-            // order can become CONFIRMED or REJECTED — is the integration step's work. Until then
-            // the decision is recorded in Oracle and visible here, and orders stay PENDING.
+            // Announced after the reservation transaction has committed, and before this method
+            // returns — so the offset is committed only once the Order Service has been told. A
+            // failure here throws, the record is redelivered, and the recorded decision is replayed
+            // rather than re-applied. See InventoryUpdatedPublisher.
+            if (result.hasSettlement()) {
+                settlements.publish(InventoryUpdatedMessage.of(
+                        message.eventId(),
+                        message.orderNumber(),
+                        result.settlement().name(),
+                        result.shortages()));
+            } else {
+                // Only reachable for an event recorded before outcomes were stored. There is
+                // nothing to announce and nothing to be gained by retrying it.
+                log.warn("Event '{}' for order '{}' carries no recorded outcome; nothing to announce",
+                        message.eventId(), message.orderNumber());
+            }
         } finally {
             // The listener thread is pooled and long-lived. Without this, the next record on this
             // thread inherits the previous order's identity and the logs attribute one order's

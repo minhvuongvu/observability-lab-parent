@@ -20,6 +20,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * The stock use cases.
@@ -36,6 +38,9 @@ public class StockApplicationService {
     public static final String STOCK_CACHE = "stock";
 
     private static final String ORDER_CREATED = "order-created";
+
+    /** Delimits stored shortage lines. A pipe cannot appear in a SKU, so the split is lossless. */
+    private static final String SHORTAGE_SEPARATOR = "|";
 
     private static final Logger log = LoggerFactory.getLogger(StockApplicationService.class);
 
@@ -149,9 +154,17 @@ public class StockApplicationService {
             List<ReservationLine> lines) {
 
         if (processedEvents.hasProcessed(eventId)) {
-            log.info("Event '{}' for order '{}' was already applied; ignoring redelivery",
-                    eventId, orderNumber);
-            return ReservationResult.alreadyProcessed();
+            // The stock change is not repeated, but the decision is handed back so the caller can
+            // announce it again. A redelivery usually means the previous announcement did not
+            // survive, and discarding the decision here is what would strand the order in PENDING.
+            var recorded = processedEvents.outcomeOf(eventId);
+            log.info("Event '{}' for order '{}' was already applied; replaying the recorded {}",
+                    eventId, orderNumber,
+                    recorded.map(r -> r.outcome().name()).orElse("(no recorded outcome)"));
+
+            return ReservationResult.alreadyProcessed(
+                    recorded.map(ProcessedEventRepository.RecordedOutcome::outcome).orElse(null),
+                    recorded.map(r -> shortagesFrom(r.detail())).orElse(List.of()));
         }
 
         // One query for every line, not one per line.
@@ -161,7 +174,9 @@ public class StockApplicationService {
 
         List<String> shortages = shortagesFor(lines, tracked);
         if (!shortages.isEmpty()) {
-            processedEvents.markProcessed(eventId, ORDER_CREATED);
+            processedEvents.markProcessed(eventId, ORDER_CREATED,
+                    new ProcessedEventRepository.RecordedOutcome(
+                            ReservationResult.Outcome.REJECTED, String.join(SHORTAGE_SEPARATOR, shortages)));
             try (var scope = LogContext.with("order_number", orderNumber)) {
                 // INFO, not ERROR: refusing to promise units that do not exist is this service
                 // working correctly.
@@ -172,7 +187,9 @@ public class StockApplicationService {
 
         lines.forEach(line -> tracked.get(line.productSku()).reserve(line.quantity(), orderNumber));
         tracked.values().forEach(stockLevels::save);
-        processedEvents.markProcessed(eventId, ORDER_CREATED);
+        processedEvents.markProcessed(eventId, ORDER_CREATED,
+                new ProcessedEventRepository.RecordedOutcome(
+                        ReservationResult.Outcome.RESERVED, null));
 
         evictCached(tracked.keySet());
 
@@ -180,6 +197,19 @@ public class StockApplicationService {
             log.info("Reserved {} line(s) for order '{}'", lines.size(), orderNumber);
         }
         return ReservationResult.reserved();
+    }
+
+    /**
+     * Splits a stored shortage detail back into its lines.
+     *
+     * <p>The detail is stored as one delimited string rather than a child table: it is opaque text
+     * that exists to be replayed verbatim into an event, and nothing ever queries an individual
+     * shortage. A separator that cannot occur in a SKU keeps the round trip lossless.
+     */
+    private static List<String> shortagesFrom(String detail) {
+        return detail == null || detail.isBlank()
+                ? List.of()
+                : List.of(detail.split(java.util.regex.Pattern.quote(SHORTAGE_SEPARATOR)));
     }
 
     /** Products that cannot satisfy their requested quantity, including untracked ones. */
@@ -207,16 +237,32 @@ public class StockApplicationService {
      * {@code allEntries = true}, would empty the cache on every order and leave it permanently cold
      * under load — which is the opposite of what it is for.
      *
-     * <p>Eviction happens before the transaction commits, so a concurrent read can briefly
-     * repopulate the entry with the pre-commit value. The window is milliseconds and bounded by the
-     * short TTL; closing it properly needs an after-commit hook, which arrives with the integration
-     * step alongside the rest of the consistency work.
+     * <p>Deferred until after commit. Evicting inline leaves a window in which a concurrent read
+     * misses, re-reads the not-yet-committed value and repopulates the entry with the <em>old</em>
+     * number — so the eviction that was supposed to fix the staleness causes it instead. Running
+     * after commit means any read that repopulates the entry can only see the new value.
+     *
+     * <p>The trade is that the cache serves the previous figure for the length of the commit rather
+     * than missing. For a short-TTL availability cache that is the better of the two.
      */
     private void evictCached(Collection<String> productSkus) {
         Cache cache = cacheManager.getCache(STOCK_CACHE);
-        if (cache != null) {
-            productSkus.forEach(cache::evict);
+        if (cache == null) {
+            return;
         }
+        List<String> keys = List.copyOf(productSkus);
+
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            // No transaction to wait for — a direct call from a test, or a read-only path.
+            keys.forEach(cache::evict);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                keys.forEach(cache::evict);
+            }
+        });
     }
 
     private StockLevel require(String productSku) {

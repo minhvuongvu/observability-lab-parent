@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.observability.lab.order.application.AvailabilityService;
 import com.observability.lab.order.application.OrderApplicationService;
 import com.observability.lab.order.application.OrderView;
 import com.observability.lab.order.domain.OrderErrorCode;
@@ -65,6 +66,12 @@ class OrderControllerTest {
 
     @MockitoBean
     private OrderApplicationService orders;
+
+    // Backs the availability pre-check endpoint. Mocked rather than exercised here: what it does is
+    // make a real HTTP call to another service, which belongs in its own test, not in a slice that
+    // is about this controller's request binding and status codes.
+    @MockitoBean
+    private AvailabilityService availability;
 
     private static OrderView view(OrderStatus status) {
         return new OrderView(NUMBER, "C-1", status, new BigDecimal("10.00"), "EUR",

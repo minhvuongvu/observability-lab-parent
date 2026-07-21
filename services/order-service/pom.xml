@@ -79,6 +79,18 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-openfeign</artifactId>
         </dependency>
+        <!-- Resolves inventory-service through the Consul registry rather than a
+             fixed URL, and spreads calls across its healthy instances. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+
+        <!-- Object storage for invoices -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+        </dependency>
 
         <!-- Operational endpoints -->
         <dependency>

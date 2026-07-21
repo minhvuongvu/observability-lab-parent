@@ -25,12 +25,14 @@ ENV_FILE="${REPO_ROOT}/docker/compose/.env"
 
 # Defaults describe the standard local stack; .env overrides them when the
 # ports or realm have been changed.
-KEYCLOAK_ISSUER="http://localhost:8080/realms/observability"
 KEYCLOAK_CLIENT_ID="swagger-ui"
 if [ -f "${ENV_FILE}" ]; then
   # shellcheck disable=SC1090
   set -a; . "${ENV_FILE}"; set +a
 fi
+# Built from the published port rather than hard-coded, so this asks the same
+# Keycloak the services validate against when the lab has been moved off 8080.
+KEYCLOAK_ISSUER="${KEYCLOAK_ISSUER:-http://${BIND_HOST:-127.0.0.1}:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:-observability}}"
 
 USERNAME="${1:-alice}"
 PASSWORD="${2:-${USERNAME}}"

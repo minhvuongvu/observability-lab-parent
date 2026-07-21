@@ -4,14 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.observability.lab.inventory.infrastructure.messaging.OrderCreatedMessage;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ValidationException;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.boot.ssl.SslBundles;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
@@ -64,7 +69,8 @@ public class KafkaConsumerConfiguration {
     public ConcurrentKafkaListenerContainerFactory<String, OrderCreatedMessage>
             orderCreatedListenerFactory(
                     ConsumerFactory<String, OrderCreatedMessage> orderCreatedConsumerFactory,
-                    KafkaProperties kafkaProperties) {
+                    KafkaProperties kafkaProperties,
+                    DefaultErrorHandler orderCreatedErrorHandler) {
 
         ConcurrentKafkaListenerContainerFactory<String, OrderCreatedMessage> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
@@ -77,21 +83,40 @@ public class KafkaConsumerConfiguration {
         if (listener.getAckMode() != null) {
             factory.getContainerProperties().setAckMode(listener.getAckMode());
         }
-        factory.setCommonErrorHandler(orderCreatedErrorHandler());
+        factory.setCommonErrorHandler(orderCreatedErrorHandler);
         return factory;
     }
 
-    private DefaultErrorHandler orderCreatedErrorHandler() {
-        DefaultErrorHandler handler =
-                new DefaultErrorHandler(new FixedBackOff(RETRY_INTERVAL_MS, RETRY_ATTEMPTS));
+    /**
+     * Retry with backoff, then dead-letter.
+     *
+     * <p>The recoverer runs only after the attempts are exhausted. It republishes the original record
+     * — key, value and headers intact — to {@code dead-letter-topic}, and Spring adds headers naming
+     * the original topic, partition, offset and the exception that finished it off. That is the
+     * difference between a message that can be diagnosed and one that was merely logged: the payload
+     * is still there to be replayed once the cause is fixed.
+     *
+     * <p>Nothing consumes the dead-letter topic. A queue that automatically feeds poison messages
+     * back into the consumer that already choked on them is a loop, not a recovery.
+     */
+    @Bean
+    public DefaultErrorHandler orderCreatedErrorHandler(KafkaTemplate<String, Object> kafkaTemplate,
+            @Value("${app.kafka.topics.dead-letter}") String deadLetterTopic) {
+
+        // Same partition on the dead-letter topic as the record had on its source topic, so
+        // per-key ordering survives the move and the two are comparable when investigating.
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
+                (record, exception) -> new TopicPartition(deadLetterTopic, record.partition()));
+
+        DefaultErrorHandler handler = new DefaultErrorHandler(
+                recoverer, new FixedBackOff(RETRY_INTERVAL_MS, RETRY_ATTEMPTS));
 
         // A rule that refused once refuses identically every time. Retrying it wastes the budget
-        // and holds up every later record on the same partition.
+        // and holds up every later record on the same partition, so these go straight to the
+        // dead-letter topic on the first failure.
         handler.addNotRetryableExceptions(BusinessException.class, ValidationException.class);
 
-        // Once the attempts are exhausted the record is logged and skipped so the partition keeps
-        // moving. Routing it to dead-letter-topic instead — where it can be inspected rather than
-        // merely lost — belongs with the retry and DLQ work of the integration step.
+        handler.setLogLevel(KafkaException.Level.ERROR);
         return handler;
     }
 }

@@ -9,6 +9,10 @@ import feign.RequestTemplate;
 import feign.Retryer;
 import feign.codec.ErrorDecoder;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.HttpHeaders;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
 /**
  * Per-client Feign configuration for {@link InventoryClient}.
@@ -65,6 +69,37 @@ public class InventoryClientConfiguration {
             header(template, CorrelationHeaders.CORRELATION_ID, CorrelationContext.correlationId());
             CorrelationContext.userId()
                     .ifPresent(userId -> template.header(CorrelationHeaders.USER_ID, userId));
+        };
+    }
+
+    /**
+     * Relays the caller's bearer token to the downstream service.
+     *
+     * <p>The Inventory Service is a resource server: it rejects an unauthenticated request with 401
+     * regardless of which service made it. Something has to authenticate the hop, and there are two
+     * honest options — forward the caller's token, or have the Order Service hold a service account
+     * and fetch its own.
+     *
+     * <p>Token relay is chosen here because it preserves <em>who is asking</em>. The downstream
+     * service sees the end user's identity and roles and can authorise accordingly; with a service
+     * account it would only ever see "the Order Service", and every per-user rule would have to be
+     * re-implemented upstream or abandoned. The cost is that the Order Service's reach is exactly the
+     * caller's reach, which for a read of stock levels is the desired behaviour.
+     *
+     * <p>Nothing is forwarded when there is no bearer token in play — a call made from a Kafka
+     * listener or a scheduled task has no user, and inventing one would be worse than a 401.
+     */
+    @Bean
+    public RequestInterceptor bearerTokenRelayInterceptor() {
+        return template -> {
+            Authentication authentication =
+                    SecurityContextHolder.getContext().getAuthentication();
+
+            if (authentication instanceof JwtAuthenticationToken jwt) {
+                // The encoded form, not a re-minted one: this service is not an issuer and must not
+                // behave like one. The downstream validates the same signature and expiry.
+                template.header(HttpHeaders.AUTHORIZATION, "Bearer " + jwt.getToken().getTokenValue());
+            }
         };
     }
 

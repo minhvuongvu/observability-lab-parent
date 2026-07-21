@@ -6,10 +6,15 @@ import com.observability.lab.order.domain.OrderItem;
 import com.observability.lab.order.domain.OrderStatus;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
+import com.observability.lab.shared.exception.TechnicalException;
 import com.observability.lab.shared.logging.LogContext;
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.ApplicationEventPublisher;
@@ -42,12 +47,20 @@ public class OrderApplicationService {
     private final OrderRepository orders;
     private final OrderNumberGenerator orderNumbers;
     private final ApplicationEventPublisher events;
+    private final InvoiceArchive invoices;
+    private final InvoiceRenderer invoiceRenderer;
+    private final Duration invoiceUrlValidity;
 
     public OrderApplicationService(OrderRepository orders, OrderNumberGenerator orderNumbers,
-            ApplicationEventPublisher events) {
+            ApplicationEventPublisher events, InvoiceArchive invoices,
+            InvoiceRenderer invoiceRenderer,
+            @Value("${app.invoice.url-validity}") Duration invoiceUrlValidity) {
         this.orders = orders;
         this.orderNumbers = orderNumbers;
         this.events = events;
+        this.invoices = invoices;
+        this.invoiceRenderer = invoiceRenderer;
+        this.invoiceUrlValidity = invoiceUrlValidity;
     }
 
     /**
@@ -101,6 +114,87 @@ public class OrderApplicationService {
     @Transactional(readOnly = true)
     public Page<OrderView> search(String customerId, OrderStatus status, Pageable pageable) {
         return orders.search(customerId, status, pageable).map(OrderView::from);
+    }
+
+    /**
+     * Applies the Inventory Service's verdict to a pending order.
+     *
+     * <p>The closing half of the order flow. The order was accepted as {@code PENDING} without
+     * knowing whether the stock existed; this is where it finds out and becomes {@code CONFIRMED} or
+     * {@code REJECTED}.
+     *
+     * <p>Deliberately tolerant, because it is driven by an at-least-once event stream and must be
+     * safe to call more than once with the same settlement:
+     *
+     * <ul>
+     *   <li><strong>Already in the target state</strong> — a redelivery. Nothing to do, and treating
+     *       it as an error would send a perfectly ordinary duplicate to the dead-letter topic.
+     *   <li><strong>Cannot legally reach the target state</strong> — almost always an order the
+     *       customer cancelled while the reservation was in flight. Logged and left alone rather than
+     *       forced: the aggregate's transition rules are not negotiable just because an event
+     *       arrived late. Releasing the stock that reservation holds is the compensating action, and
+     *       it belongs with the cancellation flow rather than here.
+     * </ul>
+     *
+     * @return the order as it now stands
+     */
+    @CacheEvict(cacheNames = ORDERS_CACHE, key = "#orderNumber")
+    public OrderView settle(String orderNumber, boolean stockReserved) {
+        Order order = require(orderNumber);
+        OrderStatus target = stockReserved ? OrderStatus.CONFIRMED : OrderStatus.REJECTED;
+
+        try (var scope = LogContext.with("order_number", orderNumber)) {
+            if (order.getStatus() == target) {
+                log.debug("Order is already {}; settlement was a redelivery", target);
+                return OrderView.from(order);
+            }
+            if (!order.getStatus().canTransitionTo(target)) {
+                log.warn("Order is {} and cannot become {}; leaving the settlement unapplied",
+                        order.getStatus(), target);
+                return OrderView.from(order);
+            }
+
+            if (stockReserved) {
+                order.confirm();
+            } else {
+                order.reject();
+            }
+            Order saved = orders.save(order);
+
+            log.info("Order settled as {}", target);
+            return OrderView.from(saved);
+        }
+    }
+
+    /**
+     * Hands out a temporary link to an order's invoice.
+     *
+     * <p>Rebuilds the invoice when object storage does not have one. The archive is written after the
+     * order commits and that write can fail — the bucket may have been briefly unreachable — so
+     * treating a missing object as an error would turn a transient upload failure into a permanently
+     * broken invoice. The document is derived from the order, so regenerating it is always possible
+     * and always produces the same answer for an unchanged order.
+     *
+     * <p>Not cached: the URL embeds an expiry, so a cached one would eventually be served after it had
+     * already stopped working.
+     */
+    @Transactional(readOnly = true)
+    public InvoiceLink invoiceFor(String orderNumber) {
+        // Loaded first so an unknown order is a 404 from the domain, rather than an empty result
+        // from a bucket that was never going to contain it.
+        Order order = require(orderNumber);
+
+        if (!invoices.contains(orderNumber)) {
+            log.info("No archived invoice for order '{}'; rebuilding it", orderNumber);
+            invoices.store(invoiceRenderer.render(OrderView.from(order)));
+        }
+
+        URI url = invoices.temporaryUrl(orderNumber, invoiceUrlValidity)
+                .orElseThrow(() -> new TechnicalException(
+                        "The invoice for order '" + orderNumber
+                                + "' was stored but could not be signed."));
+
+        return new InvoiceLink(url, Instant.now().plus(invoiceUrlValidity));
     }
 
     /** Withdraws an order. Refused by the aggregate if the status does not allow it. */

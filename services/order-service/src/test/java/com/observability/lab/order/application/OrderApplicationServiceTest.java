@@ -14,6 +14,7 @@ import com.observability.lab.order.domain.OrderStatus;
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ResourceNotFoundException;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,11 +39,18 @@ class OrderApplicationServiceTest {
     @Mock
     private ApplicationEventPublisher events;
 
+    @Mock
+    private InvoiceArchive invoices;
+
+    @Mock
+    private InvoiceRenderer invoiceRenderer;
+
     private OrderApplicationService service;
 
     @BeforeEach
     void setUp() {
-        service = new OrderApplicationService(orders, new OrderNumberGenerator(), events);
+        service = new OrderApplicationService(orders, new OrderNumberGenerator(), events,
+                invoices, invoiceRenderer, Duration.ofMinutes(15));
     }
 
     private static Order existingOrder() {
