@@ -1,0 +1,84 @@
+# ---------------------------------------------------------------------------
+# Promtail - pipeline 1 of 3.
+#
+#     services -> JSON file -> Promtail -> Loki
+#
+# The simplest of the three, and Grafana's own agent for Loki: it knows Loki's
+# API natively, so there is no format translation anywhere in the path.
+#
+# It tails the same files Fluent Bit does. That duplication is deliberate - the
+# lab demonstrates both - so each labels its records with the pipeline that
+# carried them (job="promtail" vs job="fluent-bit"). Without that they would be
+# indistinguishable in Loki and look like every log had been ingested twice.
+# ---------------------------------------------------------------------------
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  # Where Promtail remembers how far it read. On a named volume, so a restart
+  # resumes instead of re-ingesting every file from the beginning.
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    # Batch rather than push per line. Loki's ingestion cost is per request far
+    # more than per byte.
+    batchwait: 1s
+    batchsize: 1048576
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  - job_name: observability-lab-services
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: promtail
+          # Which pipeline produced this record. The whole point of running
+          # three: a LogQL query can compare them.
+          pipeline: promtail
+          __path__: /var/log/lab/*.json
+
+    pipeline_stages:
+      # 1. Parse the JSON the service wrote. Everything below reads from the
+      #    fields this extracts.
+      - json:
+          expressions:
+            level: level
+            service: service
+            environment: environment
+            logger: logger
+            correlation_id: correlation_id
+            trace_id: trace_id
+            timestamp: '"@timestamp"'
+
+      # 2. Use the application's own timestamp, not the moment Promtail read
+      #    the line. Otherwise every record from a backlog lands at the instant
+      #    of ingestion and the ordering of an incident is destroyed.
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+
+      # 3. Promote only low-cardinality fields to labels.
+      #
+      #    This is the decision that determines whether Loki stays fast. Each
+      #    distinct combination of label values is a separate stream; service
+      #    and level have a handful of values each, so this is a few dozen
+      #    streams. Promoting correlation_id or request_id here would create a
+      #    stream per request and bring the ingester down - they stay inside
+      #    the line, where LogQL can still filter on them with |= or | json.
+      - labels:
+          level:
+          service:
+          environment:
+
+      # There is deliberately no `output` stage. Without one Promtail forwards
+      # the line exactly as it read it, so the full JSON reaches Loki and
+      # Grafana can parse every field out of it on the way back. An output
+      # stage here would replace the line with a single extracted field and
+      # silently discard everything the labels did not capture.

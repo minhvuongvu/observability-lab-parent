@@ -61,6 +61,19 @@ public class OutboxEvent extends BaseEntity<Long> {
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
+    /**
+     * The correlation context this event was produced in.
+     *
+     * <p>Part of the event's durable state rather than ambient thread state, because the relay that
+     * publishes it runs minutes later on a scheduler thread with no MDC to recover. Without this the
+     * chain breaks at the broker and one business transaction appears under two identifiers.
+     */
+    @Column(name = "correlation_id", length = 128)
+    private String correlationId;
+
+    @Column(name = "trace_id", length = 64)
+    private String traceId;
+
     /** For JPA only. */
     protected OutboxEvent() {}
 
@@ -73,7 +86,8 @@ public class OutboxEvent extends BaseEntity<Long> {
      * later on a scheduler thread.
      */
     public static OutboxEvent pending(String eventId, String eventType, String topic,
-            String messageKey, String payload, Instant occurredAt) {
+            String messageKey, String payload, Instant occurredAt,
+            String correlationId, String traceId) {
 
         OutboxEvent event = new OutboxEvent();
         event.eventId = eventId;
@@ -82,6 +96,8 @@ public class OutboxEvent extends BaseEntity<Long> {
         event.messageKey = messageKey;
         event.payload = payload;
         event.occurredAt = occurredAt;
+        event.correlationId = correlationId;
+        event.traceId = traceId;
         event.attempts = 0;
         return event;
     }
@@ -149,5 +165,13 @@ public class OutboxEvent extends BaseEntity<Long> {
 
     public String getLastError() {
         return lastError;
+    }
+
+    public String getCorrelationId() {
+        return correlationId;
+    }
+
+    public String getTraceId() {
+        return traceId;
     }
 }

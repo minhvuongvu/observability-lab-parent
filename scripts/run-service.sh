@@ -82,6 +82,13 @@ if [ -z "${SERVICE_HOSTNAME:-}" ]; then
 fi
 export SERVICE_HOSTNAME="${SERVICE_HOSTNAME:-host.docker.internal}"
 
+# Absolute, and inside the repository: Promtail, Fluent Bit and Fluentd all
+# bind-mount this directory to tail the JSON logs. A relative path would put the
+# files wherever the service happened to be started from, which is exactly the
+# kind of thing that makes a log pipeline mysteriously empty.
+export LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs}"
+mkdir -p "${LOG_DIR}"
+
 JAR="$(find "${REPO_ROOT}/services/${SERVICE}/target" -maxdepth 1 -name "${SERVICE}-*.jar" \
         ! -name '*.original' 2>/dev/null | head -1)"
 if [ -z "${JAR}" ]; then
@@ -97,6 +104,7 @@ echo "  consul    ${CONSUL_HOST}:${CONSUL_PORT}"
 echo "  minio     ${MINIO_ENDPOINT} (bucket ${MINIO_INVOICE_BUCKET})"
 echo "  issuer    ${KEYCLOAK_ISSUER}"
 echo "  registers as ${SERVICE_HOSTNAME}"
+echo "  json logs ${LOG_DIR}/${SERVICE}.json"
 echo
 
 # java_bin resolves java or java.exe; the bare path does not exist on Windows.

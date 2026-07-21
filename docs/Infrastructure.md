@@ -22,9 +22,34 @@ is not part of this stack yet.
 | Kafka UI | `kafbat/kafka-ui:v1.5.0` | 8090 | Topic, consumer-group and lag inspection |
 | Redis | `redis:7.4-alpine` | 6379 | Cache, locks, rate-limit counters |
 | MinIO | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | 9000 / 9001 | S3-compatible object storage |
+| Loki | `grafana/loki:3.5.7` | 3100 | Log store for the always-on pipelines |
+| Promtail | `grafana/promtail:3.5.7` | — | Log shipper, pipeline 1 |
+| Fluent Bit | `fluent/fluent-bit:4.2.7` | — | Log shipper, pipeline 2 |
+| Grafana | `grafana/grafana:12.2.10` | 3000 | Dashboards; datasources provisioned from files |
 
-Two further containers run once and exit: `kafka-init` declares the topics, `minio-init` creates the
-invoice bucket and its least-privilege user.
+Three further containers run once and exit: `kafka-init` declares the topics, `minio-init` creates
+the invoice bucket and its least-privilege user, and `consul-init` seeds the KV configuration.
+
+### The `search` profile
+
+Four more components are declared but **not started by default**, because OpenSearch and
+Elasticsearch need roughly 2 GB each — more than a machine already running Oracle and Kafka has
+spare. Start them explicitly when comparing the two log stores:
+
+```bash
+docker compose --profile search up -d
+```
+
+| Component | Image | Host port | Role |
+| --- | --- | --- | --- |
+| Fluentd | built from `docker/fluentd` | — | Log shipper, pipeline 3, to OpenSearch |
+| OpenSearch | `opensearchproject/opensearch:2.19.6` | 9200 | Log store that indexes every field |
+| OpenSearch Dashboards | `opensearchproject/opensearch-dashboards:2.19.6` | 5601 | OpenSearch UI |
+| Elasticsearch | `docker.elastic.co/elasticsearch/elasticsearch:8.19.7` | 9201 | The other side of the fork, to point at |
+| Kibana | `docker.elastic.co/kibana/kibana:8.19.7` | 5602 | Elasticsearch UI |
+
+OpenSearch and Elasticsearch both listen on 9200 inside their containers, so they are published on
+different host ports; the same applies to their two dashboards. See [Logging.md](Logging.md).
 
 Every image is pinned to an exact tag rather than `latest`, so a rebuild months from now produces the
 same stack. All of them publish a native `arm64` build, so nothing runs under emulation on Apple

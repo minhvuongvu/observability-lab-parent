@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.observability.lab.order.application.OrderCreatedEvent;
 import com.observability.lab.order.domain.OutboxEvent;
 import com.observability.lab.order.infrastructure.persistence.OutboxEventJpaRepository;
+import com.observability.lab.shared.correlation.CorrelationContext;
 import com.observability.lab.shared.exception.TechnicalException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,7 +55,13 @@ public class OutboxOrderEventPublisher {
                 // overtake the creation it refers to.
                 event.orderNumber(),
                 serialise(event),
-                event.occurredAt()));
+                event.occurredAt(),
+                // Captured here, while still on the request thread. The relay publishes minutes
+                // later on a scheduler thread with no MDC, so if the context is not stored with
+                // the event it cannot be recovered at all — and the Inventory Service's logs end
+                // up under a different identifier than the request that caused them.
+                CorrelationContext.correlationId(),
+                CorrelationContext.traceId()));
 
         log.debug("Enqueued {} for order '{}' in the outbox", EVENT_TYPE, event.orderNumber());
     }

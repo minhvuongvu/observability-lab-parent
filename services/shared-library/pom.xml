@@ -73,6 +73,18 @@
             <optional>true</optional>
         </dependency>
 
+        <!--
+            JSON log encoding. Not optional, unlike the starters above: this module
+            ships logback-common.xml, and a service including that file must have the
+            encoder on its classpath or Logback fails to start. The MDC field names it
+            renders are defined by CorrelationFields in this same module, so the schema
+            and the thing that writes it stay together.
+        -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+        </dependency>
+
         <!-- Generates IDE metadata for the @ConfigurationProperties in this module. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

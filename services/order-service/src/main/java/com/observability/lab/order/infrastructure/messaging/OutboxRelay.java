@@ -2,11 +2,17 @@ package com.observability.lab.order.infrastructure.messaging;
 
 import com.observability.lab.order.domain.OutboxEvent;
 import com.observability.lab.order.infrastructure.persistence.OutboxEventJpaRepository;
+import com.observability.lab.shared.correlation.CorrelationContext;
+import com.observability.lab.shared.correlation.CorrelationFields;
+import com.observability.lab.shared.correlation.CorrelationHeaders;
+import com.observability.lab.shared.correlation.ServiceIdentity;
 import com.observability.lab.shared.logging.LogContext;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,14 +50,17 @@ public class OutboxRelay {
 
     private final OutboxEventJpaRepository outbox;
     private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ServiceIdentity identity;
     private final int batchSize;
     private final Duration retention;
 
     public OutboxRelay(OutboxEventJpaRepository outbox, KafkaTemplate<String, String> kafkaTemplate,
+            ServiceIdentity identity,
             @Value("${app.outbox.batch-size}") int batchSize,
             @Value("${app.outbox.retention}") Duration retention) {
         this.outbox = outbox;
         this.kafkaTemplate = kafkaTemplate;
+        this.identity = identity;
         this.batchSize = batchSize;
         this.retention = retention;
     }
@@ -96,11 +105,35 @@ public class OutboxRelay {
      * completed cannot answer that.
      */
     private boolean publish(OutboxEvent event) {
+        // Restore the context the event was produced in, so this thread's log lines and the header
+        // on the outbound record both carry it. Cleared afterwards: the scheduler thread is
+        // long-lived and the next event in the batch belongs to a different transaction.
+        CorrelationContext.correlationId(event.getCorrelationId());
+        CorrelationContext.traceId(event.getTraceId());
+
+        // Service identity too, not just the correlation ids. A scheduler thread has no filter to
+        // establish it, and a log line without a `service` field is invisible to every query and
+        // dashboard panel that filters by service — including the Kafka client's own lines, which
+        // are emitted on this thread.
+        CorrelationContext.put(CorrelationFields.SERVICE, identity.name());
+        CorrelationContext.put(CorrelationFields.ENVIRONMENT, identity.environment());
+        CorrelationContext.put(CorrelationFields.VERSION, identity.version());
+
         try (var scope = LogContext.with("event_id", event.getEventId())
                 .and("order_number", event.getMessageKey())) {
             try {
-                var result = kafkaTemplate
-                        .send(event.getTopic(), event.getMessageKey(), event.getPayload())
+                ProducerRecord<String, String> record = new ProducerRecord<>(
+                        event.getTopic(), event.getMessageKey(), event.getPayload());
+
+                // The consumer reads this to continue the same business transaction. Without it the
+                // Inventory Service invents its own correlation id and the two halves of one order
+                // cannot be joined in Loki.
+                if (event.getCorrelationId() != null) {
+                    record.headers().add(CorrelationHeaders.CORRELATION_ID,
+                            event.getCorrelationId().getBytes(StandardCharsets.UTF_8));
+                }
+
+                var result = kafkaTemplate.send(record)
                         .get(SEND_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
                 event.markPublished();
@@ -123,6 +156,8 @@ public class OutboxRelay {
                         event.getEventType(), event.getAttempts(), failure);
                 return false;
             }
+        } finally {
+            CorrelationContext.clear();
         }
     }
 

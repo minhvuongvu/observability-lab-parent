@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ===========================================================================
+  Shared logging configuration.
+
+  Included by each service's logback-spring.xml. It lives here, next to
+  CorrelationFields, because this file *is* the log schema: the JSON field
+  names below and the MDC keys that class defines are two halves of one
+  contract, and letting them drift would silently break every saved query and
+  dashboard built on them.
+
+  Two shapes, chosen by profile:
+
+    local  - one colourised line per event, for a human reading a terminal.
+    others - one JSON object per line, for a machine.
+
+  A pipeline cannot parse the pretty form and a person should not have to read
+  the JSON one, so neither is a compromise between the two.
+  ===========================================================================
+-->
+<included>
+
+    <!--
+      Where the JSON log file goes. Promtail, Fluent Bit and Fluentd all tail
+      this directory; the services run on the host while the agents run in
+      containers, so it is a path both can see, bind-mounted into each agent.
+    -->
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
+    <property name="LOG_FILE" value="${LOG_DIR}/${SERVICE_NAME:-application}.json"/>
+
+    <!--
+      Human-readable console. The correlation ids are included in an abbreviated
+      form: enough to spot that two lines belong together while scrolling, not
+      so much that the message is pushed off the right-hand edge.
+    -->
+    <appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %highlight(%-5level) [%15.15thread] %cyan(%-40.40logger{39}) %X{correlation_id:-........} : %msg%n%ex</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+      The machine-readable form.
+
+      Field order is deliberate and matches how a person scans a record when
+      they end up reading raw JSON during an incident: when, how bad, who,
+      what.
+
+      includeMdcKeyName entries are listed explicitly rather than including the
+      whole MDC. An unfiltered MDC exports whatever any library happened to put
+      there, which makes the log schema depend on transitive dependencies and
+      is how credentials end up in a log pipeline.
+    -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>@timestamp</fieldName>
+                    <!-- UTC, always. Log lines from services in different zones
+                         are otherwise impossible to order against each other. -->
+                    <timeZone>UTC</timeZone>
+                    <pattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</pattern>
+                </timestamp>
+                <logLevel><fieldName>level</fieldName></logLevel>
+                <loggerName>
+                    <fieldName>logger</fieldName>
+                    <shortenedLoggerNameLength>60</shortenedLoggerNameLength>
+                </loggerName>
+                <threadName><fieldName>thread</fieldName></threadName>
+                <message><fieldName>message</fieldName></message>
+
+                <!-- The correlation contract. See CorrelationFields. -->
+                <mdc>
+                    <includeMdcKeyName>trace_id</includeMdcKeyName>
+                    <includeMdcKeyName>span_id</includeMdcKeyName>
+                    <includeMdcKeyName>request_id</includeMdcKeyName>
+                    <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                    <includeMdcKeyName>user_id</includeMdcKeyName>
+                    <includeMdcKeyName>service</includeMdcKeyName>
+                    <includeMdcKeyName>environment</includeMdcKeyName>
+                    <includeMdcKeyName>version</includeMdcKeyName>
+                </mdc>
+
+                <!--
+                  Structured arguments: log.info("...", kv("order_number", n))
+                  puts order_number at the top level of the record as a real
+                  field, so it can be filtered on rather than matched with a
+                  substring search against the message.
+                -->
+                <arguments/>
+
+                <!--
+                  The stack trace as one string field rather than as the raw
+                  multi-line text. A stack trace written across many lines
+                  becomes many log records, and the parser attributes all but
+                  the first to nothing.
+                -->
+                <stackTrace>
+                    <fieldName>stack_trace</fieldName>
+                    <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                        <!-- Deep enough to reach the cause, bounded so one
+                             pathological trace cannot dominate a day's volume. -->
+                        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                        <maxLength>8192</maxLength>
+                        <rootCauseFirst>true</rootCauseFirst>
+                        <!-- Framework frames are noise between the application
+                             frames that actually locate the fault. -->
+                        <exclude>^sun\.reflect\..*\.invoke</exclude>
+                        <exclude>^net\.sf\.cglib\.proxy\.MethodProxy\.invoke</exclude>
+                        <exclude>^org\.springframework\.aop\..*</exclude>
+                        <exclude>^org\.apache\.catalina\..*</exclude>
+                        <exclude>^org\.apache\.tomcat\..*</exclude>
+                    </throwableConverter>
+                </stackTrace>
+                <!-- The exception's type, as its own field, so "how often does
+                     this class of failure happen" is a group-by rather than a
+                     regex over stack traces. -->
+                <throwableClassName><fieldName>exception_class</fieldName></throwableClassName>
+            </providers>
+        </encoder>
+    </appender>
+
+    <!--
+      The same JSON to a rolling file, which is what the shipping agents read.
+      Console output belongs to whatever supervises the process; a file is what
+      survives long enough for an agent to pick it up after a restart.
+    -->
+    <appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_FILE}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}.%d{yyyy-MM-dd}.%i.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <!-- Local disk is not the log store. Loki and OpenSearch are; this
+                 file is a buffer measured in hours, not a retention policy. -->
+            <maxHistory>3</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>@timestamp</fieldName>
+                    <timeZone>UTC</timeZone>
+                    <pattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</pattern>
+                </timestamp>
+                <logLevel><fieldName>level</fieldName></logLevel>
+                <loggerName>
+                    <fieldName>logger</fieldName>
+                    <shortenedLoggerNameLength>60</shortenedLoggerNameLength>
+                </loggerName>
+                <threadName><fieldName>thread</fieldName></threadName>
+                <message><fieldName>message</fieldName></message>
+                <mdc>
+                    <includeMdcKeyName>trace_id</includeMdcKeyName>
+                    <includeMdcKeyName>span_id</includeMdcKeyName>
+                    <includeMdcKeyName>request_id</includeMdcKeyName>
+                    <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                    <includeMdcKeyName>user_id</includeMdcKeyName>
+                    <includeMdcKeyName>service</includeMdcKeyName>
+                    <includeMdcKeyName>environment</includeMdcKeyName>
+                    <includeMdcKeyName>version</includeMdcKeyName>
+                </mdc>
+                <arguments/>
+                <stackTrace>
+                    <fieldName>stack_trace</fieldName>
+                    <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                        <maxLength>8192</maxLength>
+                        <rootCauseFirst>true</rootCauseFirst>
+                        <exclude>^sun\.reflect\..*\.invoke</exclude>
+                        <exclude>^org\.springframework\.aop\..*</exclude>
+                        <exclude>^org\.apache\.catalina\..*</exclude>
+                        <exclude>^org\.apache\.tomcat\..*</exclude>
+                    </throwableConverter>
+                </stackTrace>
+                <throwableClassName><fieldName>exception_class</fieldName></throwableClassName>
+            </providers>
+        </encoder>
+    </appender>
+
+    <!--
+      Both JSON appenders are wrapped so a slow or blocked destination cannot
+      stall the thread doing the work. neverBlock keeps that promise under
+      sustained pressure: when the queue is full, log events are dropped rather
+      than allowed to apply back-pressure to request handling. Losing log lines
+      during a flood is bad; stalling every request thread because a disk is
+      slow is worse, and it turns a logging problem into an outage.
+    -->
+    <appender name="ASYNC_CONSOLE_JSON" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="CONSOLE_JSON"/>
+        <queueSize>4096</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <includeCallerData>false</includeCallerData>
+    </appender>
+
+    <appender name="ASYNC_FILE_JSON" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="FILE_JSON"/>
+        <queueSize>4096</queueSize>
+        <!-- 0, not the default 20%: the default silently drops TRACE, DEBUG and
+             INFO once the queue is a fifth full, which removes exactly the
+             context that makes the surviving WARN and ERROR lines legible. -->
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <includeCallerData>false</includeCallerData>
+    </appender>
+
+</included>

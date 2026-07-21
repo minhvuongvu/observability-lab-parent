@@ -1,0 +1,337 @@
+# ===========================================================================
+# Observability Lab - logging pipeline
+#
+# Combined with the other compose files through COMPOSE_FILE in .env.
+#
+# Three pipelines carry the same log lines to two different stores:
+#
+#   services -> JSON file -> Promtail   -> Loki
+#   services -> JSON file -> Fluent Bit -> Loki
+#   services -> JSON file -> Fluentd    -> OpenSearch   (profile: search)
+#
+# The services run on the host and write JSON into <repo>/logs; every agent
+# bind-mounts that directory read-only. Once the services are containerised the
+# agents read the container log driver instead and nothing else changes.
+#
+# Memory is the reason for the `search` profile. Loki, its two agents and
+# Grafana together need about a gigabyte and start with the normal `up`.
+# OpenSearch and Elasticsearch need roughly two gigabytes each, which a machine
+# already running Oracle and Kafka does not have spare - so they are opt-in:
+#
+#     docker compose --profile search up -d
+#
+# See docs/Logging.md.
+# ===========================================================================
+
+services:
+
+  # -------------------------------------------------------------------------
+  # Loki - log store for the two always-on pipelines.
+  #
+  # Indexes labels only and compresses the line itself, which is what makes it
+  # cheap enough to run beside everything else here. The corollary is that
+  # label cardinality is the thing to be careful about; the agents' configs are
+  # where that care is actually applied.
+  # -------------------------------------------------------------------------
+  loki:
+    image: ${LOKI_IMAGE}
+    container_name: lab-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yml"]
+    user: root
+    ports:
+      - "${BIND_HOST}:${LOKI_PORT}:3100"
+    volumes:
+      - ../../infrastructure/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready | grep -q ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # Promtail - pipeline 1. Grafana's own agent, speaks Loki natively.
+  # -------------------------------------------------------------------------
+  promtail:
+    image: ${PROMTAIL_IMAGE}
+    container_name: lab-promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    depends_on:
+      loki:
+        condition: service_healthy
+    volumes:
+      - ../../infrastructure/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      # Read-only: an agent that can write to the logs it reads can corrupt the
+      # evidence it exists to preserve.
+      - ../../logs:/var/log/lab:ro
+      - promtail-data:/var/lib/promtail
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9080/ready | grep -q Ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # -------------------------------------------------------------------------
+  # Fluent Bit - pipeline 2. Same source and sink as Promtail, different agent:
+  # a few megabytes of C rather than a Go runtime, which is what makes it the
+  # usual choice for a per-node DaemonSet.
+  # -------------------------------------------------------------------------
+  fluent-bit:
+    image: ${FLUENT_BIT_IMAGE}
+    container_name: lab-fluent-bit
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+    volumes:
+      - ../../infrastructure/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ../../infrastructure/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - ../../logs:/var/log/lab:ro
+      - fluent-bit-data:/var/lib/fluent-bit
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:2020/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # -------------------------------------------------------------------------
+  # Fluentd - pipeline 3, to OpenSearch. Opt-in with the rest of the search
+  # stack, since its only destination is part of it.
+  # -------------------------------------------------------------------------
+  fluentd:
+    build:
+      context: ../fluentd
+      args:
+        FLUENTD_VERSION: ${FLUENTD_VERSION}
+    image: lab-fluentd:${FLUENTD_VERSION}
+    container_name: lab-fluentd
+    restart: unless-stopped
+    profiles: ["search"]
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    volumes:
+      - ../../infrastructure/fluentd/fluent.conf:/fluentd/etc/fluent.conf:ro
+      - ../../logs:/var/log/lab:ro
+      - fluentd-data:/var/lib/fluentd
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # -------------------------------------------------------------------------
+  # OpenSearch - the "index every field" half of the comparison.
+  #
+  # Single node, security plugin off. Both are lab simplifications and both
+  # would be wrong in production: a single node has no redundancy, and
+  # disabling security removes authentication from a store that holds every log
+  # line the platform produces. The port is bound to loopback.
+  # -------------------------------------------------------------------------
+  opensearch:
+    image: ${OPENSEARCH_IMAGE}
+    container_name: lab-opensearch
+    restart: unless-stopped
+    profiles: ["search"]
+    environment:
+      discovery.type: single-node
+      # Heap. Half the container limit, as the JVM wants room for off-heap.
+      OPENSEARCH_JAVA_OPTS: "-Xms768m -Xmx768m"
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      # A single-node lab has no second node to replicate to, and a disk-full
+      # laptop should not make the index read-only.
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      - "${BIND_HOST}:${OPENSEARCH_PORT}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+
+  opensearch-dashboards:
+    image: ${OPENSEARCH_DASHBOARDS_IMAGE}
+    container_name: lab-opensearch-dashboards
+    restart: unless-stopped
+    profiles: ["search"]
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    ports:
+      - "${BIND_HOST}:${OPENSEARCH_DASHBOARDS_PORT}:5601"
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # -------------------------------------------------------------------------
+  # Elasticsearch and Kibana.
+  #
+  # OpenSearch forked from Elasticsearch 7.10, so these two stacks are close
+  # cousins that have since diverged - in licence, in plugin ecosystem, and
+  # increasingly in query features. Both are here because a platform team ends
+  # up choosing between them, and the choice is easier having run each.
+  #
+  # Nothing ships to Elasticsearch by default; it is here to be pointed at.
+  # -------------------------------------------------------------------------
+  elasticsearch:
+    image: ${ELASTICSEARCH_IMAGE}
+    container_name: lab-elasticsearch
+    restart: unless-stopped
+    profiles: ["search"]
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms768m -Xmx768m"
+      # Off for the same reason as OpenSearch's, and with the same caveat.
+      xpack.security.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      - "${BIND_HOST}:${ELASTICSEARCH_PORT}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+
+  kibana:
+    image: ${KIBANA_IMAGE}
+    container_name: lab-kibana
+    restart: unless-stopped
+    profiles: ["search"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "${BIND_HOST}:${KIBANA_PORT}:5601"
+    networks:
+      - lab-observability
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # -------------------------------------------------------------------------
+  # Grafana - where the logs are actually read.
+  #
+  # Datasources and dashboards are provisioned from files rather than clicked
+  # in: a dashboard that exists only in someone's browser is not part of the
+  # system. Everything here is version-controlled and recreated on a fresh
+  # volume.
+  # -------------------------------------------------------------------------
+  grafana:
+    image: ${GRAFANA_IMAGE}
+    container_name: lab-grafana
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      # Anonymous viewing, deliberately: this is a loopback-bound lab and being
+      # asked to log in to look at a graph teaches nothing. Editing still
+      # requires the admin account.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_LEVEL: warn
+    ports:
+      - "${BIND_HOST}:${GRAFANA_PORT}:3000"
+    volumes:
+      - ../../infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - lab-observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+networks:
+  # The observability stack talks to itself and is reached from the host. It is
+  # deliberately not on lab-data: a log shipper has no business being able to
+  # reach PostgreSQL or Oracle.
+  lab-observability:
+    name: lab-observability
+    driver: bridge
+
+volumes:
+  loki-data:
+    name: lab-loki-data
+  promtail-data:
+    name: lab-promtail-data
+  fluent-bit-data:
+    name: lab-fluent-bit-data
+  fluentd-data:
+    name: lab-fluentd-data
+  opensearch-data:
+    name: lab-opensearch-data
+  elasticsearch-data:
+    name: lab-elasticsearch-data
+  grafana-data:
+    name: lab-grafana-data

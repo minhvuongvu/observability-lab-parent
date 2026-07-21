@@ -354,8 +354,9 @@ by service and environment.
 | [docs/Kafka.md](docs/Kafka.md) | Event-driven integration: topics, consumer groups, the transactional outbox, idempotency, retry, backoff and the dead-letter topic |
 | [docs/Redis.md](docs/Redis.md) | Caching: what is cached and what deliberately is not, key layout, TTL, eviction and after-commit invalidation |
 | [docs/MinIO.md](docs/MinIO.md) | Object storage: the invoice bucket, least-privilege credentials, upload timing, object naming and signed URLs |
+| [docs/Logging.md](docs/Logging.md) | Structured JSON logs, the MDC lifecycle, the three shipping pipelines, Loki vs OpenSearch, label cardinality and the Grafana dashboard |
 
-Deployment, Observability, Logging, Metrics, Tracing, Profiling, Gateway, Runbook, Troubleshooting,
+Deployment, Observability, Metrics, Tracing, Profiling, Gateway, Runbook, Troubleshooting,
 Performance and Security guides are produced by the steps that introduce each capability, and
 consolidated in step 16.
 
@@ -377,7 +378,7 @@ documented before the next one starts.
 | 07 | Authentication: Keycloak realm, clients, roles, users, JWT flow | **Complete** |
 | 08 | Service discovery: Consul registration, health, KV configuration | **Complete** |
 | 09 | Integration: end-to-end order flow, Kafka events, MinIO upload, retry, DLQ | **Complete** |
-| 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | Planned |
+| 10 | Logging: JSON logs, MDC, Fluent Bit, Fluentd, Promtail, Loki, OpenSearch | **Complete** |
 | 11 | Metrics: Micrometer, Prometheus, VictoriaMetrics, business metrics | Planned |
 | 12 | Tracing: OpenTelemetry SDK and Collector, Tempo, Jaeger, Zipkin | Planned |
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | Planned |

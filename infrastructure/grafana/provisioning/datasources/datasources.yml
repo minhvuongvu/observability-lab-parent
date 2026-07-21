@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# Grafana datasources, provisioned from this file.
+#
+# Not clicked in through the UI. A datasource that exists only in someone's
+# browser session is not part of the system: it cannot be reviewed, it is lost
+# when the volume is recreated, and nobody else's Grafana has it.
+#
+# Metrics, traces and profiles datasources arrive with steps 11 to 13.
+# ---------------------------------------------------------------------------
+apiVersion: 1
+
+datasources:
+
+  # -------------------------------------------------------------------------
+  # Loki - the always-on log store, fed by both Promtail and Fluent Bit.
+  # -------------------------------------------------------------------------
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    # Grafana talks to Loki over the compose network, so this is the service
+    # name and the internal port - not the host-published one.
+    url: http://loki:3100
+    isDefault: true
+    editable: false
+    jsonData:
+      # Cap what one careless query can pull into the browser.
+      maxLines: 1000
+      # Once tracing lands (step 12) a trace_id in a log line becomes a link
+      # straight into Tempo. The field is already in every record, so this is
+      # the only piece that has to wait.
+      derivedFields:
+        - name: TraceID
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          # datasourceUid is deliberately absent until Tempo exists; naming a
+          # datasource that is not provisioned makes Grafana log an error on
+          # every dashboard load.
+
+  # -------------------------------------------------------------------------
+  # OpenSearch - only reachable when the `search` profile is up. Provisioned
+  # unconditionally so that starting the profile is the only step needed; until
+  # then Grafana simply shows it as unreachable, which is honest.
+  # -------------------------------------------------------------------------
+  - name: OpenSearch
+    type: elasticsearch
+    uid: opensearch
+    access: proxy
+    url: http://opensearch:9200
+    # Fluentd writes daily indices named lab-logs-YYYY.MM.DD.
+    database: "[lab-logs-]YYYY.MM.DD"
+    editable: false
+    jsonData:
+      index: "[lab-logs-]YYYY.MM.DD"
+      interval: Daily
+      timeField: "@timestamp"
+      # OpenSearch 2.x answers the version handshake as Elasticsearch 7.10,
+      # which is the fork point. Grafana's elasticsearch datasource speaks that
+      # dialect, which is why this works at all.
+      maxConcurrentShardRequests: 5
+      logMessageField: message
+      logLevelField: level
+
+  # -------------------------------------------------------------------------
+  # Elasticsearch - also behind the `search` profile. Nothing ships to it by
+  # default; it is here to be pointed at when comparing the two.
+  # -------------------------------------------------------------------------
+  - name: Elasticsearch
+    type: elasticsearch
+    uid: elasticsearch
+    access: proxy
+    url: http://elasticsearch:9200
+    database: "[lab-logs-]YYYY.MM.DD"
+    editable: false
+    jsonData:
+      index: "[lab-logs-]YYYY.MM.DD"
+      interval: Daily
+      timeField: "@timestamp"
+      maxConcurrentShardRequests: 5
+      logMessageField: message
+      logLevelField: level

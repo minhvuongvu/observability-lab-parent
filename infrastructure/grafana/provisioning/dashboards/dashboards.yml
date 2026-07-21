@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# Dashboard provisioning.
+#
+# Grafana loads every dashboard JSON under the mounted path and keeps watching
+# it, so editing a file on disk updates the dashboard without a restart.
+#
+# Dashboards are read-only in the UI on purpose. The file is the source of
+# truth; letting someone save over it in the browser means the next container
+# recreation silently discards their work, which is a worse outcome than being
+# told to edit the file.
+# ---------------------------------------------------------------------------
+apiVersion: 1
+
+providers:
+  - name: observability-lab
+    orgId: 1
+    folder: Observability Lab
+    type: file
+    disableDeletion: false
+    # Re-read every 30s so an edit shows up while it is being worked on.
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      # Mirror the directory layout into Grafana folders, so metrics and
+      # tracing dashboards can be added later without a flat list.
+      foldersFromFilesStructure: true

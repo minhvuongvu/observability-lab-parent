@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ===========================================================================
+  Order Service logging.
+
+  logback-spring.xml rather than logback.xml: only the former is read after
+  Spring has resolved the environment, which is what makes <springProfile> and
+  springProperty work. With plain logback.xml the profile blocks below are
+  inert and every environment silently gets the same appenders.
+
+  This file decides *where* logs go and *what shape* they take. It deliberately
+  sets no levels: Spring Boot applies logging.level.* from application.yml
+  after this file is parsed, so a <logger level="..."> here would be silently
+  overridden and the two would disagree in a way nobody could see. Levels live
+  in application.yml and its per-profile files, which is also where a operator
+  expects to change one.
+
+  The schema itself lives in logback-common.xml, in the shared library. See
+  docs/Logging.md.
+  ===========================================================================
+-->
+<configuration scan="false">
+
+    <!-- Names the log file, so each service's records land in their own file
+         for the shipping agents to label by service. -->
+    <springProperty scope="context" name="SERVICE_NAME" source="spring.application.name"
+                    defaultValue="order-service"/>
+    <springProperty scope="context" name="LOG_DIR" source="app.logging.directory"
+                    defaultValue="logs"/>
+
+    <include resource="logback-common.xml"/>
+
+    <!--
+      Local: a person is reading this in a terminal. JSON still goes to the
+      file, so the whole pipeline can be exercised on a workstation without
+      giving up a readable console.
+    -->
+    <springProfile name="local">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_PLAIN"/>
+            <appender-ref ref="ASYNC_FILE_JSON"/>
+        </root>
+    </springProfile>
+
+    <!--
+      Everywhere else: nothing reads the console directly, so it carries JSON
+      too. A container runtime collecting stdout and an agent tailing the file
+      then see the same records in the same shape.
+    -->
+    <springProfile name="dev,prod">
+        <root level="INFO">
+            <appender-ref ref="ASYNC_CONSOLE_JSON"/>
+            <appender-ref ref="ASYNC_FILE_JSON"/>
+        </root>
+    </springProfile>
+
+</configuration>

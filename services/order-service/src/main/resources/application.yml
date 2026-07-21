@@ -186,6 +186,12 @@ app:
   version: @project.version@
   environment: local
 
+  logging:
+    # Where the JSON log file is written. The shipping agents run in containers
+    # and bind-mount this directory, so it has to be a path both they and the
+    # service can see; ./scripts/run-service.sh points it at <repo>/logs.
+    directory: ${LOG_DIR:logs}
+
   security:
     # Issuer every token must carry; verified on every request. Kong enforces
     # the same issuer at the edge (infrastructure/kong/kong.yml), so a token is
@@ -285,7 +291,16 @@ springdoc:
     operations-sorter: method
     tags-sorter: alpha
 
+# Levels only. Where the logs go and what shape they take is logback-spring.xml's
+# job; Boot applies these after that file is parsed, so this is the one place a
+# level can be changed without the two disagreeing. See docs/Logging.md.
 logging:
   level:
     root: INFO
     com.observability.lab: INFO
+    # The Kafka client logs its entire resolved configuration at INFO on every
+    # partition assignment - hundreds of lines per rebalance, none of it about
+    # this service.
+    org.apache.kafka.clients: WARN
+    org.apache.kafka.common.metrics: WARN
+    org.springframework.web: INFO

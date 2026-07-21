@@ -1,0 +1,79 @@
+# ---------------------------------------------------------------------------
+# Loki - the log store the lab queries from Grafana.
+#
+# Single-binary mode: ingester, distributor, querier and compactor in one
+# process. A real deployment separates them so each scales on its own axis;
+# one process is enough to exercise ingestion, labelling and LogQL, which is
+# what the lab is for.
+#
+# The idea Loki is built on, and the reason its configuration looks like this:
+# only *labels* are indexed, and the log line itself is compressed and stored
+# whole. That makes ingestion cheap and makes label cardinality the thing you
+# have to be careful about - see the shipping agents' configs, which is where
+# labels are actually chosen.
+# ---------------------------------------------------------------------------
+
+auth_enabled: false   # Single tenant. Multi-tenancy would need an X-Scope-OrgID on every request.
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  # Quieter than the default: Loki logs every successful push at info.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Reject records whose timestamp is far in the past. Without this, replaying
+  # an old log file silently poisons the index with out-of-order chunks.
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  # A lab generates bursts when a load test runs. These are generous enough
+  # that a burst is ingested rather than dropped, and low enough that a runaway
+  # logger cannot fill the disk unnoticed.
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  max_streams_per_user: 5000
+  # The guard rail that matters: every distinct combination of label values is
+  # a stream, and a label with unbounded values (a request id, a user id) makes
+  # a stream per request. This caps the damage from that mistake.
+  max_label_names_per_series: 20
+  max_query_series: 1000
+  allow_structured_metadata: true
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+table_manager:
+  retention_deletes_enabled: true
+  # A week. Long enough to investigate something from last Tuesday, short
+  # enough that a laptop does not fill up.
+  retention_period: 168h
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
