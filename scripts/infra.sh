@@ -2,7 +2,8 @@
 # ---------------------------------------------------------------------------
 # Drives the local infrastructure stack.
 #
-#   ./scripts/infra.sh up        start everything and wait until healthy
+#   ./scripts/infra.sh up        build, start everything, wait until healthy
+#   ./scripts/infra.sh build     rebuild the two service images only
 #   ./scripts/infra.sh down      stop containers, keep data
 #   ./scripts/infra.sh destroy   stop containers and delete all volumes
 #   ./scripts/infra.sh restart   down then up
@@ -11,6 +12,13 @@
 #   ./scripts/infra.sh logs [service]
 #   ./scripts/infra.sh urls      where each UI lives
 #   ./scripts/infra.sh <other>   anything else is passed to docker compose
+#
+# This starts the WHOLE system - infrastructure, both Spring Boot services, the
+# observability stack and the simulation tier - on one Docker network. Nothing
+# runs outside it. Load and faults are driven separately:
+#
+#   ./scripts/load.sh  load      sustained high load, from inside the network
+#   ./scripts/chaos.sh slow ...  latency, failures and resets on any hop
 #
 # The compose files are combined through COMPOSE_FILE in docker/compose/.env,
 # which this script creates from .env.example on first run.
@@ -30,8 +38,10 @@ COMPOSE_DIR="$(cd "${SCRIPT_DIR}/../docker/compose" && pwd)"
 ONESHOT_SERVICES="kafka-init minio-init consul-init"
 
 # How long to wait for the stack to become healthy. Oracle dominates this:
-# a first boot initialises the database and can take several minutes.
-WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-600}"
+# a first boot initialises the database and can take several minutes, and the
+# Inventory Service cannot become ready until it has. Raised from 600 when the
+# services joined the stack - they now wait for Oracle *and then* run Flyway.
+WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -83,6 +93,8 @@ compose() {
       -f docker-compose.yml \
       -f docker-compose.platform.yml \
       -f docker-compose.observability.yml \
+      -f docker-compose.services.yml \
+      -f docker-compose.simulation.yml \
       "$@")
 }
 
@@ -140,10 +152,15 @@ EOF
 }
 
 cmd_up() {
-  echo "Starting the infrastructure stack."
-  echo "First run pulls several GB of images and initialises Oracle; expect a few minutes."
+  echo "Starting the full stack: infrastructure, services, observability, simulation."
+  echo "First run pulls several GB of images, compiles both services and initialises"
+  echo "Oracle; expect ten minutes or so. Subsequent runs are much faster."
   echo
-  compose up -d --remove-orphans
+  # --build, so a source change is picked up by `up` rather than silently
+  # running the previous image. The Docker layer cache makes this cheap when
+  # nothing changed, and a stale service image is a debugging session that
+  # starts with entirely correct-looking code.
+  compose up -d --build --remove-orphans
 
   echo
   echo "Waiting for containers to become healthy (timeout ${WAIT_TIMEOUT_SECONDS}s)..."
@@ -180,6 +197,11 @@ cmd_urls() {
 
   local host="${BIND_HOST:-127.0.0.1}"
   cat <<EOF
+Services
+  Order Service         http://${host}:${ORDER_SERVICE_PORT:-8081}
+  Inventory Service     http://${host}:${INVENTORY_SERVICE_PORT:-8082}
+  Inventory gRPC        ${host}:${INVENTORY_GRPC_PORT:-9082}   (inventory.v1.InventoryService)
+
 Endpoints
   Nginx (edge)          http://${host}:${NGINX_HTTP_PORT:-80}/healthz
   Kong proxy            http://${host}:${KONG_PROXY_PORT:-8000}
@@ -210,8 +232,13 @@ Data endpoints
   PostgreSQL            ${host}:${POSTGRES_PORT:-5432}
   Oracle                ${host}:${ORACLE_PORT:-1521}/${ORACLE_PDB:-FREEPDB1}
   Kafka (from host)     ${host}:${KAFKA_EXTERNAL_PORT:-29092}
-  Redis                 ${host}:${REDIS_PORT:-6379}
+  Redis                 ${host}:${REDIS_HOST_PORT:-6379}
   MinIO API             http://${host}:${MINIO_API_PORT:-9000}
+
+Simulation
+  Toxiproxy API         http://${host}:${TOXIPROXY_API_PORT:-8474}/proxies
+  Load generator        ./scripts/load.sh  smoke | load | stress | spike | soak
+  Fault injection       ./scripts/chaos.sh list | slow | down | reset
 EOF
 }
 
@@ -230,7 +257,7 @@ main() {
 
   case "${cmd}" in
     help|-h|--help)
-      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       return 0
       ;;
     urls)
@@ -247,6 +274,7 @@ main() {
 
   case "${cmd}" in
     up)      cmd_up ;;
+    build)   compose build "$@" order-service inventory-service ;;
     down)    compose down --remove-orphans ;;
     destroy) cmd_destroy ;;
     restart) compose down --remove-orphans && cmd_up ;;

@@ -300,13 +300,28 @@ piece of the telemetry design.
 
 ## 10. Deployment view
 
-The whole stack runs on one host via Docker Compose. Containers share named networks, use named
-volumes for durable state, declare healthchecks, and express startup order with `depends_on` +
-`condition: service_healthy` rather than sleeps. Resource limits and restart policies are set so
-memory pressure and restarts are *observable* rather than silently absorbed by the host.
+The whole system runs on one host via Docker Compose, **entirely inside one Docker network,
+`lab-net`.** Nothing runs outside it: not the two services, not the load generator, not the fault
+proxy. Containers use named volumes for durable state, declare healthchecks, and express startup
+order with `depends_on` + `condition: service_healthy` rather than sleeps. Resource limits and
+restart policies are set so memory pressure and restarts are *observable* rather than silently
+absorbed by the host.
 
-Compose files are split by concern — core data, platform, observability, services — so a learner can
-bring up only the slice they are studying. See [`docker/README.md`](../docker/README.md).
+That single network replaced four tier networks, and the trade is recorded honestly in
+[Infrastructure.md](Infrastructure.md#2-network-topology): real isolation was given up, in exchange
+for a system whose every hop can be instrumented, delayed or broken from inside. The isolation was
+already fictional while the services were host processes reached through `host.docker.internal`.
+
+Three addressing rules follow, and every wiring decision in the stack obeys them:
+
+| Rule | Why |
+| --- | --- |
+| Components address each other by **compose name** | A published port can change without breaking anything but a bookmark |
+| Applications reach dependencies **through Toxiproxy** | Faults become injectable at runtime; with no toxics it is a transparent relay |
+| Monitoring reaches its targets **directly** | An exporter sharing the application's broken path could not tell you the path is what is broken |
+
+Compose files are split by concern — core data, platform, observability, services, simulation — for
+readability, not so they can be run separately. See [`docker/README.md`](../docker/README.md).
 
 ## 11. Decision log
 

@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Runs a service against the local infrastructure stack.
+# Runs ONE service on the host, against the containerised stack.
 #
+#     docker stop lab-order-service          # first: retire its container
 #     ./scripts/run-service.sh order-service
-#     ./scripts/run-service.sh order-service --spring.profiles.active=dev
 #
-# Connection settings are read from docker/compose/.env, which is the single
-# source of truth for how the stack is published on this machine. That matters:
-# a host already running PostgreSQL or Redis makes the lab move to other ports,
-# and hard-coding 5432 into a run command would then silently connect a service
-# to the wrong database.
+# THIS IS THE EXCEPTION PATH, not how the lab runs.
+#
+# Everything - both services, the observability stack, the load generator and
+# the fault proxy - runs inside the lab-net Docker network:
+#
+#     ./scripts/infra.sh up
+#
+# This script exists for one thing the container cannot give you conveniently:
+# attaching an IDE debugger with hot reload to a service while the rest of the
+# system carries on around it. Its container must be stopped first, or two
+# instances register in Consul and half the traffic goes to the one you are not
+# looking at - which is a genuinely baffling afternoon.
+#
+# What you give up by using it, and it is worth knowing before you do:
+#
+#   - The service is outside lab-net, so its traffic crosses the host's network
+#     stack. Latency measurements are not comparable with a containerised run.
+#   - Toxiproxy is not in its path, so ./scripts/chaos.sh cannot inject faults
+#     into this instance's dependencies.
+#   - There is no CPU or memory limit on it, so it will not exhibit the
+#     saturation, GC pressure or OOM behaviour the container is tuned to show.
+#
+# Connection settings come from docker/compose/.env, translated below from the
+# in-network addresses the containers use into the published ports the host can
+# actually reach. That translation is the whole body of this script.
 #
 # Any argument after the service name is passed through to the application.
 # ---------------------------------------------------------------------------
@@ -40,13 +60,25 @@ set -a; . "${ENV_FILE}"; set +a
 
 HOST="${BIND_HOST:-127.0.0.1}"
 
-# Translate the stack's published addresses into the variables the services
-# resolve in their application.yml.
+# ---------------------------------------------------------------------------
+# Address translation.
+#
+# The variables in .env name addresses on lab-net - `toxiproxy:15432`,
+# `kafka:9092` - because that is what the containers use. None of them resolve
+# on the host, so each is rebuilt here from the PUBLISHED port of the same
+# component. Every assignment below is deliberately overriding what .env set.
+#
+# Note that nothing here goes through Toxiproxy: its proxy ports are not
+# published, and there would be little point since the traffic has already left
+# the network. Fault injection does not reach a service run this way.
+# ---------------------------------------------------------------------------
 export ORDER_DB_HOST="${HOST}"
 export ORDER_DB_PORT="${POSTGRES_PORT:-5432}"
 export REDIS_HOST="${HOST}"
-export REDIS_PORT="${REDIS_PORT:-6379}"
-export KAFKA_BOOTSTRAP_SERVERS="${HOST}:${KAFKA_EXTERNAL_PORT:-9092}"
+export REDIS_PORT="${REDIS_HOST_PORT:-6379}"
+# The broker's EXTERNAL listener, which advertises localhost - the reason that
+# listener exists at all.
+export KAFKA_BOOTSTRAP_SERVERS="${HOST}:${KAFKA_EXTERNAL_PORT:-29092}"
 export ORACLE_DB_HOST="${HOST}"
 export ORACLE_DB_PORT="${ORACLE_PORT:-1521}"
 export CONSUL_HOST="${HOST}"
@@ -57,12 +89,18 @@ export MINIO_ENDPOINT="http://${HOST}:${MINIO_API_PORT:-9000}"
 export MINIO_ACCESS_KEY="${MINIO_APP_USER:-lab-invoice-app}"
 export MINIO_SECRET_KEY="${MINIO_APP_PASSWORD:-}"
 export MINIO_INVOICE_BUCKET="${MINIO_INVOICE_BUCKET:-invoices}"
-# Derived from the published port for the same reason as the rest: a host
-# already running something on 8080 moves Keycloak, and a service left
-# validating tokens against the wrong issuer rejects every request with an
-# error that says nothing about ports.
-export KEYCLOAK_ISSUER="http://${HOST}:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:-observability}"
-export KEYCLOAK_JWKS_URI="${KEYCLOAK_ISSUER}/protocol/openid-connect/certs"
+# Identity, and the one pair that must NOT be kept consistent with each other.
+#
+# The issuer is an in-network address and stays exactly as .env has it: every
+# token in this lab is minted with `iss` = http://keycloak:8080/realms/... -
+# by k6, by scripts/token.sh, by the containerised services - and a host-run
+# instance validating against anything else rejects all of them.
+#
+# The JWKS endpoint is where this process actually fetches verification keys
+# from, so it has to be an address the host can resolve. Different values, and
+# correctly so: one is a string to compare, the other is a URL to open.
+export KEYCLOAK_ISSUER="${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-observability}}"
+export KEYCLOAK_JWKS_URI="http://${HOST}:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:-observability}/protocol/openid-connect/certs"
 
 # The address this service advertises in Consul, and therefore the address other
 # services are handed when they resolve it through discovery. It has to work
@@ -71,10 +109,11 @@ export KEYCLOAK_JWKS_URI="${KEYCLOAK_ISSUER}/protocol/openid-connect/certs"
 #
 # host.docker.internal satisfies only the first - it does not resolve on the
 # host - so a Feign client following the registry would be given an address it
-# cannot reach. This machine's own LAN address satisfies both. The
-# host.docker.internal fallback remains correct where no LAN address can be
-# determined, and the whole variable becomes the compose service name once the
-# services are themselves containerised.
+# cannot reach. This machine's own LAN address satisfies both.
+#
+# The containerised instance of this service registers its compose name instead,
+# which is why its container has to be stopped before this one starts: two
+# instances under the same service id split the traffic between them.
 if [ -z "${SERVICE_HOSTNAME:-}" ]; then
   SERVICE_HOSTNAME="$( { ipconfig getifaddr en0 || ipconfig getifaddr en1; } 2>/dev/null \
     || hostname -I 2>/dev/null | awk '{print $1}' \
@@ -100,10 +139,14 @@ if [ "${SERVICE}" = "inventory-service" ]; then
   export GRPC_BIND_ADDRESS="${GRPC_BIND_ADDRESS:-0.0.0.0}"
 fi
 
-# Absolute, and inside the repository: Promtail, Fluent Bit and Fluentd all
-# bind-mount this directory to tail the JSON logs. A relative path would put the
-# files wherever the service happened to be started from, which is exactly the
-# kind of thing that makes a log pipeline mysteriously empty.
+# Absolute, and inside the repository. Note what this means now that the agents
+# read the lab-logs volume rather than this directory: logs written here are NOT
+# shipped to Loki. They are readable on disk and nowhere else.
+#
+# That is a real limitation of the debug path rather than an oversight - the
+# alternative is mounting a host directory back into three containers, which
+# reintroduces exactly the host dependency this stack was restructured to
+# remove. If you need this instance's logs in Grafana, run it in its container.
 export LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs}"
 mkdir -p "${LOG_DIR}"
 

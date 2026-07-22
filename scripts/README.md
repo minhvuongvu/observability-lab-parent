@@ -10,7 +10,9 @@ to run from any working directory, and resolves its own toolchain rather than tr
 | `verify-toolchain.sh` | Reports whether this machine can build and run the lab. Exits non-zero when a build prerequisite is missing. |
 | `build.sh` | Builds all Maven modules against a JDK 21 toolchain. Extra arguments are forwarded to Maven. |
 | `infra.sh` | Drives the Docker infrastructure stack: start, stop, health, logs, destroy. Unrecognised commands pass through to `docker compose`. |
-| `run-service.sh` | Runs a service against the running stack, reading the effective ports from `docker/compose/.env` so a remapped stack still connects correctly. |
+| `load.sh` | Runs a k6 load scenario from inside the Docker network: `smoke`, `load`, `stress`, `spike`, `soak`. Results remote-write into the same Prometheus that scrapes the platform. |
+| `chaos.sh` | Injects latency, connection failures, resets and bandwidth caps into any dependency hop, through Toxiproxy. Takes effect immediately; `chaos.sh reset` undoes everything. |
+| `run-service.sh` | **The exception path.** Runs one service on the host for attaching an IDE debugger. Its container must be stopped first. Everything normally runs in Docker — see the script header for what this path gives up. |
 | `gateway.sh` | Validates, reloads and inspects the edge: Kong's routes, plugins and upstream target health. |
 | `token.sh` | Fetches a Keycloak access token via the password grant, for calling the protected APIs by hand. Prints only the token. |
 | `toolchain.sh` | Sourced helper that resolves a JDK 21+ into `JAVA_HOME`. Not executed directly. |
@@ -28,8 +30,8 @@ to run from any working directory, and resolves its own toolchain rather than tr
 ./scripts/infra.sh destroy        # stop and delete every volume (asks first)
 ./scripts/infra.sh exec redis sh  # anything else goes to docker compose
 
+docker stop lab-order-service          # first: retire its container
 ./scripts/run-service.sh order-service
-./scripts/run-service.sh order-service --spring.profiles.active=dev
 
 TOKEN=$(./scripts/token.sh alice)   # USER token; ./scripts/token.sh manager for ADMIN
 curl -H "Authorization: Bearer $TOKEN" http://localhost/api/v1/orders

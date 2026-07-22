@@ -18,15 +18,21 @@ _format_version: "3.0"
 # host has no notion of the target being up or down; an upstream does, and stops
 # sending traffic to a target that is failing.
 #
-# Targets are host.docker.internal because the services currently run on the
-# developer's machine while Kong runs in a container. Once the services are
-# containerised this becomes their compose service name and nothing else here
-# changes - which is the other reason the address lives in exactly one place.
+# Targets are the services' own compose names on lab-net. They used to be
+# host.docker.internal, because the services were processes on the developer's
+# machine; containerising them made this the one line that had to change, which
+# is the other reason the address lives in exactly one place.
+#
+# Note what these targets deliberately do NOT go through: the Inventory Service
+# registers itself in Consul as `toxiproxy`, so the Order Service reaches it
+# through the fault proxy while the gateway reaches it directly. That asymmetry
+# is useful - a toxic on inventory-http breaks service-to-service calls while the
+# public API keeps answering, which is a real and confusing production shape.
 # ---------------------------------------------------------------------------
 upstreams:
   - name: order-service.upstream
     targets:
-      - target: host.docker.internal:8081
+      - target: order-service:8081
         weight: 100
     healthchecks:
       active:
@@ -62,7 +68,7 @@ upstreams:
 
   - name: inventory-service.upstream
     targets:
-      - target: host.docker.internal:8082
+      - target: inventory-service:8082
         weight: 100
     healthchecks:
       active:
@@ -219,14 +225,21 @@ plugins:
 # token (key_claim_name above). It is the exact public half of the RSA key the
 # realm import pins, so it keeps verifying across stack rebuilds.
 #
-# The `key` is the token issuer. If KEYCLOAK_PORT or KEYCLOAK_REALM in .env
-# change, the issuer changes and this value must change with it, or every token
-# is rejected as coming from an unknown issuer.
+# The `key` is the token issuer, and it is an in-network address on purpose.
+# Keycloak derives the `iss` claim from the Host header of the request that
+# minted the token, so a token fetched from localhost:8080 and one fetched from
+# keycloak:8080 carry different issuers and only one of them matches this key.
+# Since k6, the services and every container reach Keycloak as keycloak:8080,
+# that is the canonical form - and scripts/token.sh sends `Host: keycloak:8080`
+# so a token minted from the host is identical to one minted from inside.
+#
+# If KEYCLOAK_REALM in .env changes, this value must change with it, or every
+# token is rejected as coming from an unknown issuer.
 # ---------------------------------------------------------------------------
 consumers:
   - username: keycloak-observability
     jwt_secrets:
-      - key: "http://localhost:8080/realms/observability"
+      - key: "http://keycloak:8080/realms/observability"
         algorithm: RS256
         rsa_public_key: |
           -----BEGIN PUBLIC KEY-----

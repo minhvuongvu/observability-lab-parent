@@ -25,11 +25,9 @@ services:
     container_name: lab-consul
     restart: unless-stopped
     command: ["agent", "-config-dir=/consul/config"]
-    extra_hosts:
-      # Consul HTTP-health-checks the services, which run on the host while it
-      # runs in a container. This resolves host.docker.internal to the host from
-      # inside the container, exactly as the gateway does for its upstreams.
-      - "host.docker.internal:host-gateway"
+    # No extra_hosts. Consul HTTP-health-checks the services by the address they
+    # register, and both now register a name on lab-net that it can resolve
+    # directly - there is no longer a host to hop through.
     environment:
       # The image entrypoint resolves the bind address from this interface.
       # Without it a container with several addresses refuses to start.
@@ -44,7 +42,7 @@ services:
       # still keeps the configuration read-only inside the container.
       - ../../infrastructure/consul/config/server.hcl:/consul/config/server.hcl:ro
     networks:
-      - lab-app
+      - lab-net
     healthcheck:
       test: ["CMD", "consul", "members"]
       interval: 10s
@@ -81,7 +79,7 @@ services:
     volumes:
       - ../../infrastructure/consul/kv/application.yaml:/consul-kv/application.yaml:ro
     networks:
-      - lab-app
+      - lab-net
     restart: "no"
 
   # -------------------------------------------------------------------------
@@ -131,8 +129,7 @@ services:
       # the realm, its clients, roles, users and signing key.
       - ../../infrastructure/keycloak/realm:/opt/keycloak/data/import:ro
     networks:
-      - lab-app
-      - lab-data
+      - lab-net
     healthcheck:
       # The image ships no curl or wget. This is the bash socket-redirection
       # form recommended by the Keycloak documentation.
@@ -183,16 +180,12 @@ services:
       - "${BIND_HOST}:${KONG_PROXY_PORT}:8000"
       - "${BIND_HOST}:${KONG_ADMIN_PORT}:8001"
       - "${BIND_HOST}:${KONG_MANAGER_PORT}:8002"
-    extra_hosts:
-      # The upstream targets in kong.yml address the developer's machine, where
-      # the services currently run. Docker Desktop provides this name already;
-      # Linux does not, and without the mapping the gateway resolves nothing.
-      - "host.docker.internal:host-gateway"
+    # No extra_hosts. The upstream targets in kong.yml are now the services'
+    # own compose names, resolved on lab-net.
     volumes:
       - ../../infrastructure/kong:/opt/kong:ro
     networks:
-      - lab-app
-      - lab-edge
+      - lab-net
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 10s
@@ -207,9 +200,11 @@ services:
   # -------------------------------------------------------------------------
   # Nginx - single network entry point.
   #
-  # Sits on lab-edge only. It cannot reach a database or the broker even if
-  # misconfigured, which is the entire reason the edge is its own network.
-  # Upstream routing to Kong and TLS termination arrive in step 06.
+  # It used to sit on lab-edge alone, unable to reach a database however badly
+  # misconfigured. That separation is gone with the move to one network; the
+  # reasoning is recorded in the networks block of docker-compose.yml. Nginx
+  # still proxies only to Kong, which is now a routing fact rather than a
+  # network-enforced one.
   # -------------------------------------------------------------------------
   nginx:
     image: ${NGINX_IMAGE}
@@ -224,7 +219,7 @@ services:
       - ../../infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../../infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
     networks:
-      - lab-edge
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1"]
       interval: 10s
@@ -235,13 +230,6 @@ services:
       resources:
         limits:
           memory: 192M
-
-networks:
-  # Public-facing tier. Declared here because Nginx and Kong are its only
-  # members; the data plane file has no reason to know it exists.
-  lab-edge:
-    name: lab-edge
-    driver: bridge
 
 volumes:
   consul-data:

@@ -13,14 +13,35 @@
 name: observability-lab
 
 networks:
-  # Stateful backends. Only components that genuinely need a database, the
-  # broker or the object store are attached here.
-  lab-data:
-    name: lab-data
-    driver: bridge
-  # Application tier. Services, discovery, identity and the gateway meet here.
-  lab-app:
-    name: lab-app
+  # ---------------------------------------------------------------------------
+  # One network. Every component of the lab is on it and nothing runs outside
+  # it - not the services, not the load generator, not the fault proxy.
+  #
+  # This replaced four tier networks (lab-data, lab-app, lab-edge,
+  # lab-observability) whose separation was a genuine control: Nginx on the edge
+  # could not reach a database however badly it was misconfigured. That property
+  # is gone, and the trade was made on purpose.
+  #
+  # The reason is that the segmentation was already fictional. The two services
+  # ran on the host and were reached through host.docker.internal, so traffic
+  # that was supposed to stay inside a bridge network left it, crossed the
+  # host's stack and came back - which no tier boundary was inspecting. A
+  # boundary that the main traffic path routes around is a diagram, not a
+  # control.
+  #
+  # What is bought instead is that the whole system is now one addressable
+  # network: a fault proxy can sit in front of any hop, a load generator
+  # experiences the same network the services do, and a failing container is a
+  # failure of the lab rather than a failure of the laptop. For a system whose
+  # purpose is reproducing load, latency and failure, that is the better trade.
+  #
+  # Network segmentation as a security control is not thereby dismissed - it is
+  # simply not what this lab is demonstrating, and the honest version of a thing
+  # is better than a decorative one. docs/Infrastructure.md records what was
+  # given up.
+  # ---------------------------------------------------------------------------
+  lab-net:
+    name: lab-net
     driver: bridge
 
 volumes:
@@ -70,7 +91,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ../../infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
     networks:
-      - lab-data
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -q -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -112,7 +133,7 @@ services:
       - oracle-data:/opt/oracle/oradata
       - ../../infrastructure/oracle/init:/container-entrypoint-initdb.d:ro
     networks:
-      - lab-data
+      - lab-net
     healthcheck:
       test: ["CMD", "healthcheck.sh"]
       interval: 15s
@@ -127,10 +148,19 @@ services:
   # -------------------------------------------------------------------------
   # Kafka - event backbone, KRaft mode (no ZooKeeper).
   #
-  # Two client listeners: INTERNAL for containers on lab-data, EXTERNAL for a
-  # service run straight from the IDE on the host. Advertised addresses differ
-  # per listener, which is the single most common source of "connects then
-  # immediately fails" Kafka problems.
+  # Three client listeners. Advertised addresses differ per listener, which is
+  # the single most common source of "connects then immediately fails" Kafka
+  # problems:
+  #
+  #   INTERNAL  :9092   -> kafka:9092        containers on lab-net
+  #   EXTERNAL  :29092  -> localhost:29092   the host, for the IDE debug path
+  #   PROXY     :9094   -> toxiproxy:19092   clients arriving through Toxiproxy
+  #
+  # PROXY exists because a Kafka client bootstraps against one address and is
+  # then told by the broker which address to actually use. Proxying :9092 would
+  # hand the client `kafka:9092` on that second connection and the proxy would
+  # be bypassed - silently, so injected faults would appear to do nothing at
+  # all. A client that arrives on :9094 is told to keep using the proxy.
   #
   # Topic auto-creation is off. Topics are infrastructure and are declared in
   # the init container below, not conjured by whoever produces first.
@@ -143,9 +173,9 @@ services:
       CLUSTER_ID: ${KAFKA_CLUSTER_ID}
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT}
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092,PROXY://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT},PROXY://toxiproxy:${TOXIPROXY_KAFKA_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,PROXY:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
@@ -163,7 +193,7 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:
-      - lab-data
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 10s
@@ -194,7 +224,7 @@ services:
     volumes:
       - ../../infrastructure/kafka/init:/opt/lab-init:ro
     networks:
-      - lab-data
+      - lab-net
 
   # -------------------------------------------------------------------------
   # Kafka UI - broker, topic, consumer-group and lag inspection.
@@ -214,8 +244,7 @@ services:
     ports:
       - "${BIND_HOST}:${KAFKA_UI_PORT}:8080"
     networks:
-      - lab-data
-      - lab-app
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
       interval: 15s
@@ -247,12 +276,12 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
     ports:
-      - "${BIND_HOST}:${REDIS_PORT}:6379"
+      - "${BIND_HOST}:${REDIS_HOST_PORT}:6379"
     volumes:
       - redis-data:/data
       - ../../infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
     networks:
-      - lab-data
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
       interval: 10s
@@ -281,8 +310,7 @@ services:
     volumes:
       - minio-data:/data
     networks:
-      - lab-data
-      - lab-app
+      - lab-net
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -316,4 +344,4 @@ services:
     volumes:
       - ../../infrastructure/minio/init:/opt/lab-init:ro
     networks:
-      - lab-data
+      - lab-net

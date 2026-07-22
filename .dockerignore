@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Build context exclusions.
+#
+# The service images build from the repository root, because the Maven reactor
+# is multi-module: order-service compiles against shared-library and against the
+# generated stubs from proto/, so a context scoped to one service directory
+# cannot build it.
+#
+# A root context means everything below would otherwise be uploaded to the
+# daemon on every build - including target/ directories that are larger than the
+# resulting image. Worse than slow: a stale target/ copied into the builder is a
+# jar that was not built from the sources in this context.
+# ---------------------------------------------------------------------------
+
+# Build output. Rebuilt inside the image; never copied in.
+**/target/
+**/*.class
+
+# Runtime artefacts. logs/ is the host-side directory the pre-container setup
+# used; containers write to the lab-logs volume instead.
+logs/
+data/
+tmp/
+**/*.log
+
+# Java agents, resolved into the builder stage from Maven rather than copied
+# from a developer's machine - so the image's agent version is the one pinned in
+# pom.xml, not whatever happens to be sitting in tools/.
+tools/
+
+# VCS, IDE, OS
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Nothing under docker/ or infrastructure/ is needed to compile a service; both
+# are mounted into containers at run time instead.
+docker/
+infrastructure/
+
+# Documentation
+docs/
+*.md
+
+# Local environment. A credential must never be baked into an image layer.
+.env
+.env.*
+!.env.example
+secrets/

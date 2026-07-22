@@ -1,10 +1,14 @@
 # Infrastructure
 
-How the local infrastructure stack is composed, started and operated.
+How the stack is composed, started and operated.
 
-This covers the ten backing components the services will depend on. The observability stack — the
-collector, metric stores, log stores, trace stores and Grafana — is introduced in steps 10 to 13 and
-is not part of this stack yet.
+**Everything runs in Docker, on one network.** The two Spring Boot services, the ten backing
+components, the observability stack, the load generator and the fault proxy are all containers on
+`lab-net`. No component runs outside it.
+
+That was not always true. Until this step the services were processes on the developer's machine and
+every container that needed to reach them did so through `host.docker.internal`. Section 2 explains
+what changed and what it cost.
 
 ---
 
@@ -12,6 +16,10 @@ is not part of this stack yet.
 
 | Component | Image | Host port | Role |
 | --- | --- | --- | --- |
+| **Order Service** | `lab-order-service:local` (built here) | 8081 | Orders, PostgreSQL, Kafka producer, gRPC client |
+| **Inventory Service** | `lab-inventory-service:local` (built here) | 8082 / 9082 | Stock, Oracle, Kafka consumer, gRPC server |
+| **Toxiproxy** | `ghcr.io/shopify/toxiproxy:2.10.0` | 8474 | Fault injection on every dependency hop |
+| **k6** | `grafana/k6:1.8.0` | — | Load generation, profile `load` |
 | Nginx | `nginx:1.30-alpine` | 80 | Single network entry point |
 | Kong | `kong:3.9.3` | 8000 / 8001 / 8002 | API gateway, DB-less |
 | Keycloak | `quay.io/keycloak/keycloak:26.7.0` | 8080 | OIDC identity provider |
@@ -82,33 +90,69 @@ On Apple Silicon that also needs `platform: linux/amd64` on the `oracle` service
 
 ## 2. Network topology
 
-Three bridge networks, one per tier. A component joins only the networks it genuinely needs, so a
-misconfiguration cannot turn into a path that should not exist — Nginx sits on the edge network alone
-and cannot reach a database even if someone points it at one.
+**One bridge network, `lab-net`.** Every component joins it and nothing runs outside it.
 
 ```mermaid
-flowchart LR
-    H([host 127.0.0.1]) --> E["lab-edge"]
-    E --> A["lab-app"]
-    A --> D["lab-data"]
+flowchart TB
+    H([host 127.0.0.1<br/><i>published ports, for a browser only</i>])
+    subgraph lab-net
+        direction LR
+        EDGE[nginx → kong]
+        SVC[order-service<br/>inventory-service]
+        TOX[toxiproxy]
+        DATA[(postgres · oracle · kafka<br/>redis · minio)]
+        PLAT[consul · keycloak]
+        OBS[prometheus · loki · tempo<br/>grafana · pyroscope · …]
+        K6[k6]
+
+        EDGE --> SVC
+        SVC --> TOX --> DATA
+        SVC --> PLAT
+        SVC -.->|logs, metrics, traces, profiles| OBS
+        OBS -->|scrape, direct| DATA
+        K6 --> SVC
+    end
+    H -.-> EDGE
+    H -.-> OBS
 ```
 
-| Component | `lab-edge` | `lab-app` | `lab-data` |
-| --- | :---: | :---: | :---: |
-| nginx | ● | | |
-| kong | ● | ● | |
-| consul | | ● | |
-| keycloak | | ● | ● |
-| kafka-ui | | ● | ● |
-| minio | | ● | ● |
-| postgres | | | ● |
-| oracle | | | ● |
-| kafka | | | ● |
-| redis | | | ● |
+### Why one network, and what it cost
 
-Keycloak spans `lab-app` and `lab-data` because it is reached by the gateway but stores its state in
-PostgreSQL. MinIO spans both for the same reason: application traffic on one side, storage on the
-other.
+This replaced four tier networks — `lab-edge`, `lab-app`, `lab-data`, `lab-observability` — whose
+separation was a real control. Nginx sat on the edge alone and could not reach a database however
+badly it was misconfigured. **That property is gone, and the trade was deliberate.**
+
+The reason is that the segmentation was already fictional. The two services ran on the host and were
+reached through `host.docker.internal`, so the system's main traffic path left the bridge network,
+crossed the host's stack and came back — passing no tier boundary at all. A boundary the primary
+traffic path routes around is a diagram, not a control.
+
+What was bought instead:
+
+- **A fault proxy can sit in front of any hop.** Toxiproxy is on the same network as both the services
+  and their dependencies, which is what makes latency and failure injectable at all. See
+  [Simulation.md](Simulation.md).
+- **A load generator experiences the same network the services do**, rather than the host's loopback
+  stack — which has different latency characteristics and no notion of the gateway.
+- **A failing component is a failure of the lab, not of the laptop.** Resource limits, OOM kills and
+  restarts are now observable events rather than things that happen to a JVM in a terminal.
+- **One address space.** Kong, Prometheus and Consul all reach a service by its compose name. Three
+  `host.docker.internal` indirections and their platform caveats are gone.
+
+Network segmentation as a security control is not thereby dismissed — it is simply not what this lab
+demonstrates, and an honest single network is worth more than a decorative set of four. If you want
+the segmentation back, it is a `networks:` block per compose file and no other change; the addressing
+is already by name.
+
+### Addressing rules
+
+Three rules, and every wiring decision in the stack follows from them.
+
+| Rule | Why |
+| --- | --- |
+| Components address each other **by compose name**, never through the host | A published port can then change without breaking anything but a bookmark |
+| Applications reach their dependencies **through `toxiproxy`** | Faults become injectable at runtime; with no toxics it is a transparent relay |
+| Monitoring reaches its targets **directly** | An exporter that shared the application's broken path could not tell you the path is what is broken |
 
 ### Port binding
 
@@ -116,18 +160,35 @@ Every published port binds to `${BIND_HOST}`, which defaults to `127.0.0.1`. The
 not reachable from the local network. The placeholder credentials in `.env.example` are only
 defensible because of this — change `BIND_HOST` and you must change the passwords too.
 
+Published ports exist **for a person**: a browser opening Grafana, a `curl` against an API, `psql`
+against PostgreSQL. Nothing in the stack talks to anything else through them.
+
+### The one exception
+
+`./scripts/run-service.sh` still runs a single service on the host, for attaching an IDE debugger. It
+is the documented exception and it is not how the lab runs — the container has to be stopped first,
+the instance is outside `lab-net`, Toxiproxy is not in its path, and its logs are not shipped. The
+script's header lists what you give up.
+
 ---
 
 ## 3. Prerequisites
 
 | Requirement | Value |
 | --- | --- |
-| Docker Engine | recent, with the Compose v2 plugin |
-| Memory available to Docker | **8 GB recommended**, 6 GB minimum |
-| Disk | ~8 GB for images plus volume data |
+| Docker Engine | recent, with the Compose v2 plugin and BuildKit |
+| Memory available to Docker | **10 GB recommended**, 8 GB minimum |
+| Disk | ~10 GB for images plus volume data |
 
-Oracle alone is capped at 2.5 GB and is the reason for the memory figure. On Docker Desktop the limit
-is under Settings → Resources.
+Oracle alone is capped at 2.5 GB, and the two services take 768 MB each — together they are most of
+the memory figure. On Docker Desktop the limit is under Settings → Resources.
+
+The service memory limits are deliberately modest and are set in `.env`
+(`ORDER_SERVICE_MEMORY`, `INVENTORY_SERVICE_MEMORY`). A service with room to spare never exhibits GC
+pressure, heap alerts or an OOM kill, and those are things this lab exists to make visible.
+
+BuildKit is needed because `docker/service/Dockerfile` uses cache mounts for the Maven repository. It
+is the default in every currently supported Docker version.
 
 Check the machine first:
 
@@ -140,21 +201,34 @@ Check the machine first:
 ## 4. Running the stack
 
 ```bash
-./scripts/infra.sh up        # start everything, wait until healthy, print endpoints
+./scripts/infra.sh up        # build, start everything, wait until healthy, print endpoints
+./scripts/infra.sh build     # rebuild just the two service images
 ./scripts/infra.sh health    # one line per container
 ./scripts/infra.sh ps        # compose status
-./scripts/infra.sh logs kafka
+./scripts/infra.sh logs order-service
 ./scripts/infra.sh urls      # where every UI lives
 ./scripts/infra.sh down      # stop containers, keep data
 ./scripts/infra.sh destroy   # stop containers and delete all volumes (asks first)
 ```
 
+`up` starts the **whole system** — infrastructure, both services, the observability stack and the
+fault proxy. There is no second command to run afterwards. Load and faults are driven separately:
+
+```bash
+./scripts/load.sh  load                  # sustained high load, from inside the network
+./scripts/chaos.sh slow postgres 400     # +400ms on the database hop
+./scripts/chaos.sh reset                 # undo every fault
+```
+
 Anything the script does not recognise is passed straight to `docker compose`, so
 `./scripts/infra.sh top` or `./scripts/infra.sh exec redis sh` work as expected.
 
-**First run takes several minutes.** Images are pulled, then Oracle initialises a database from
-scratch and Keycloak performs a build step. `up` waits for health rather than returning early, and
-reports what is still pending if it times out.
+**First run takes around ten minutes.** Images are pulled, both services are compiled from source in
+a builder stage, Oracle initialises a database from scratch and Keycloak performs a build step. `up`
+waits for health rather than returning early, and reports what is still pending if it times out.
+
+Subsequent runs are far faster: the Maven repository lives in a BuildKit cache mount, so a rebuild
+after a code change recompiles without re-resolving dependencies.
 
 ### Configuration
 
@@ -162,15 +236,27 @@ reports what is still pending if it times out.
 `.env.example` on first run. `.env.example` documents every variable and carries obvious local-only
 placeholders (`localdev_*`) so a fresh clone starts without editing anything.
 
-`COMPOSE_FILE` in `.env` combines the two compose files, which is why plain `docker compose up` works
-from `docker/compose/`:
+`COMPOSE_FILE` in `.env` combines the five compose files, which is why plain `docker compose up`
+works from `docker/compose/`:
 
 | File | Contents |
 | --- | --- |
-| `docker-compose.yml` | Core data plane: PostgreSQL, Oracle, Kafka, Kafka UI, Redis, MinIO |
+| `docker-compose.yml` | Core data plane: PostgreSQL, Oracle, Kafka, Kafka UI, Redis, MinIO. Declares `lab-net` |
 | `docker-compose.platform.yml` | Edge and control plane: Consul, Keycloak, Kong, Nginx |
+| `docker-compose.observability.yml` | Logs, metrics, traces, profiles, alerting, exporters |
+| `docker-compose.services.yml` | The two Spring Boot services. Declares the `lab-logs` volume |
+| `docker-compose.simulation.yml` | Toxiproxy and k6 |
 
-They are always used together — Keycloak depends on the PostgreSQL service declared in the core file.
+They are split by concern so each stays readable, not so they can be run separately. They are always
+used together: Keycloak depends on the PostgreSQL service from the core file, the services depend on
+Toxiproxy from the simulation file, and `lab-net` itself is declared in the core file.
+
+Two compose profiles keep the heaviest components opt-in:
+
+| Profile | Starts | Why it is opt-in |
+| --- | --- | --- |
+| `search` | OpenSearch, Elasticsearch and their dashboards, Fluentd | ~4 GB that a machine already running Oracle does not have spare |
+| `load` | k6 | A load generator running during `up` would poison every other measurement |
 
 ---
 
@@ -303,6 +389,7 @@ This step brings the components up. It does not configure what they do:
 | Step 07 | Keycloak realm, clients, roles, users; the JWT plugin starts enforcing |
 | Step 08 | Consul service registration and KV configuration |
 | Step 10–13 | The entire observability stack |
+| Step 17 | In-application chaos endpoints. The faults available today are network-level, injected by Toxiproxy from outside the process — see [Simulation.md](Simulation.md). A memory leak, a CPU spike or a deliberate deadlock cannot be produced from outside and need code |
 
 ---
 
@@ -314,6 +401,12 @@ Since step 06 the gateway is configured and carrying traffic:
 client ──► Nginx :80 ──► Kong :8000 ──► order-service :8081
                                     └─► inventory-service :8082
 ```
+
+Those upstream targets are compose names on `lab-net`; they were `host.docker.internal` until the
+services were containerised. Note that the gateway reaches the Inventory Service **directly**, while
+the Order Service reaches it **through Toxiproxy** — so a fault on the `inventory-http` proxy breaks
+service-to-service calls while the public API keeps answering. That asymmetry is deliberate: it is a
+real and confusing production shape, and worth having seen once.
 
 | Component | Owns |
 | --- | --- |
@@ -342,9 +435,10 @@ does not silently exercise the old config and conclude the change did not work. 
 **`/actuator` is not routed.** Health detail, environment properties and metrics describe internal
 topology. Operators reach them on the service port, which is bound to loopback.
 
-**Upstream targets are static.** Kong addresses `host.docker.internal:8081` and `:8082` because the
-services currently run on the developer's machine. This becomes a Compose service name once they are
-containerised, and a registry lookup once Consul is wired in at step 08.
+**Upstream targets are static.** Kong addresses `order-service:8081` and `inventory-service:8082` —
+compose names on `lab-net`. They were `host.docker.internal` until the services were containerised.
+A registry lookup would be the next step; the services already register in Consul, and Kong reading
+that catalog rather than a static list is the change that makes instances scalable at the edge.
 
 **Rate limit counters are per Kong node.** `policy: local` is correct for a single-node gateway; a
 cluster would need the `redis` policy, or each node would independently allow the whole quota.

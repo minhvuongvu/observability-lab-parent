@@ -147,7 +147,7 @@ someone's browser is lost the next time the volume is recreated.
 ```bash
 ./scripts/infra.sh up          # everything except the `search` profile
 ./scripts/infra.sh urls        # every endpoint, reflecting .env
-./scripts/run-service.sh order-service       # agents attached automatically
+./scripts/infra.sh up                        # agents are baked into the service images
 ```
 
 | UI | Address |

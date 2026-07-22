@@ -1,0 +1,134 @@
+# ===========================================================================
+# Observability Lab - the simulation tier.
+#
+# Two components, and between them they cover the three things this lab is for
+# reproducing on demand:
+#
+#   high load        k6, offering a fixed arrival rate from inside the network
+#   failure          Toxiproxy, refusing or resetting connections
+#   slow responses   Toxiproxy, adding latency to any hop
+#
+# Neither is possible against a service running on the host, which is why the
+# containerisation and this file are one change rather than two.
+#
+# Toxiproxy starts with the stack, because the services address their
+# dependencies through it. k6 is behind the `load` profile and is started on
+# demand by ../../scripts/load.sh - a load generator that runs on `up` would
+# make every other measurement in the lab meaningless.
+# ===========================================================================
+
+services:
+
+  # -------------------------------------------------------------------------
+  # Toxiproxy - a TCP proxy that can be told to misbehave.
+  #
+  # It sits between the services and every dependency below them. The seven
+  # proxies are declared in infrastructure/toxiproxy/toxiproxy.json and start
+  # with NO toxics, so by default this is a transparent relay and the stack
+  # behaves exactly as it would without it.
+  #
+  # Faults are added at runtime over the HTTP API on :8474 - no restart, no
+  # config reload, no rebuild. That immediacy is the whole reason for a proxy
+  # rather than, say, `docker network disconnect`: an experiment you can undo in
+  # one command is an experiment you will actually run.
+  #
+  # What it can do, and none of it is expressible in application code:
+  #   latency      fixed delay + jitter, in either direction
+  #   bandwidth    throttle to N KB/s
+  #   slow_close   delay TCP close, so sockets pile up
+  #   timeout      accept the connection and never answer - the nastiest one,
+  #                because a health check on another port still passes
+  #   reset_peer   RST after N ms, the connection-reset case
+  #   slicer       split packets, exposing code that assumes one read per message
+  #
+  # It is deliberately NOT in the path of the exporters. postgres-exporter and
+  # friends address their datastores directly, so during a fault the exporter
+  # reports a healthy database while the service reports timeouts - and that
+  # disagreement is the diagnosis. See infrastructure/toxiproxy/README.md.
+  # -------------------------------------------------------------------------
+  toxiproxy:
+    image: ${TOXIPROXY_IMAGE}
+    container_name: lab-toxiproxy
+    restart: unless-stopped
+    command:
+      - -host=0.0.0.0
+      - -config=/etc/toxiproxy/toxiproxy.json
+      # Both default to false, and without them /metrics answers 404 - so the
+      # Prometheus job for this container is down and the record of what each
+      # experiment actually did does not exist. `proxy` gives the per-proxy
+      # byte and connection counters; `runtime` gives the Go process metrics
+      # that say whether the proxy itself was the bottleneck.
+      - -proxy-metrics
+      - -runtime-metrics
+    ports:
+      # The control API, published so scripts/chaos.sh and curl can drive it
+      # from the host. It is an unauthenticated API that can break every
+      # dependency in the stack, which is precisely why it binds to loopback.
+      - "${BIND_HOST}:${TOXIPROXY_API_PORT}:8474"
+    volumes:
+      - ../../infrastructure/toxiproxy/toxiproxy.json:/etc/toxiproxy/toxiproxy.json:ro
+    networks:
+      - lab-net
+    healthcheck:
+      # The image is minimal - no shell, no curl, no wget. toxiproxy-cli ships
+      # with it and talks to the same API a healthcheck would.
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # -------------------------------------------------------------------------
+  # k6 - the load generator.
+  #
+  # `run --rm`, not a long-running service: a load test has a beginning and an
+  # end, and leaving one running would poison every other measurement the lab
+  # takes. The `load` profile keeps it out of a normal `up` entirely.
+  #
+  # Driven by ../../scripts/load.sh, which supplies the scenario name and the
+  # remote-write flags. The definition here exists so the scripts, scenarios and
+  # environment are declared in one reviewable place rather than assembled on a
+  # command line.
+  # -------------------------------------------------------------------------
+  k6:
+    image: ${K6_IMAGE}
+    container_name: lab-k6
+    profiles: ["load"]
+    # Overridden by load.sh with the scenario to run.
+    command: ["run", "/scripts/smoke.js"]
+    environment:
+      # Straight at the service. Kong's rate limit is 120/minute, so a run aimed
+      # at the edge measures the limiter; BASE_URL=http://nginx is a separate,
+      # deliberate experiment. See infrastructure/k6/README.md.
+      BASE_URL: ${K6_BASE_URL}
+      INVENTORY_URL: http://inventory-service:8082
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      SKU_COUNT: ${K6_SKU_COUNT}
+
+      # Remote-write every k6 metric into the same Prometheus that scrapes the
+      # platform. This is what puts the load and its effect on one time axis -
+      # k6_http_req_duration next to jvm_gc_pause_seconds, at the same instant.
+      # Prometheus runs with --web.enable-remote-write-receiver for it.
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      # Native histograms, so a p99 computed in Grafana is exact rather than
+      # interpolated from k6's default summary quantiles - which cannot be
+      # aggregated across runs at all.
+      K6_PROMETHEUS_RW_TREND_STATS: "p(50),p(90),p(95),p(99),max"
+      K6_PROMETHEUS_RW_STALE_MARKERS: "true"
+    volumes:
+      - ../../infrastructure/k6:/scripts:ro
+    networks:
+      - lab-net
+    deploy:
+      resources:
+        limits:
+          # Enough to sustain a few thousand VUs. If k6 itself is the bottleneck
+          # the run measures k6, so `dropped_iterations` in the summary is the
+          # first number to check after any surprising result.
+          memory: ${K6_MEMORY}

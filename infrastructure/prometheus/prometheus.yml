@@ -49,10 +49,15 @@ scrape_configs:
   # -------------------------------------------------------------------------
   # The Spring Boot services.
   #
-  # They run on the host while Prometheus runs in a container, so the target is
-  # host.docker.internal - the same indirection Consul uses to health-check
-  # them. Once the services are containerised these become their compose
-  # service names.
+  # Their compose names on lab-net. These were the host's address while the
+  # services were processes on the developer's machine; containerising them made
+  # this the only line here that had to change.
+  #
+  # Prometheus scrapes them DIRECTLY, never through Toxiproxy - the same rule
+  # the exporters follow. A monitoring path that shared the application's
+  # network path would break in the same way the application does, and most of
+  # the value of a fault-injection lab is being able to see that a datastore is
+  # fine while the path to it is not.
   #
   # Static targets rather than Consul service discovery: the two services are
   # known and fixed here, and a static list makes a missing target obvious
@@ -73,10 +78,10 @@ scrape_configs:
     # of their own and are exactly what the ServiceDown alert reads.
     honor_labels: true
     static_configs:
-      - targets: ["host.docker.internal:8081"]
+      - targets: ["order-service:8081"]
         labels:
           service: order-service
-      - targets: ["host.docker.internal:8082"]
+      - targets: ["inventory-service:8082"]
         labels:
           service: inventory-service
     relabel_configs:
@@ -158,16 +163,55 @@ scrape_configs:
     static_configs:
       - targets: ["loki:3100"]
 
+  # The two log shippers. Scraped because `up == 0` here is the only external
+  # signal that a pipeline has stopped - a log agent fails silently by
+  # definition, since the evidence it would have shipped is the evidence that
+  # it stopped.
+  #
+  # It matters more for Fluent Bit than for anything else in this file: its
+  # image contains no shell and no HTTP client, so it carries no container
+  # healthcheck at all and this job is its whole health signal. See the comment
+  # on that service in docker-compose.observability.yml.
+  - job_name: fluent-bit
+    metrics_path: /api/v1/metrics/prometheus
+    static_configs:
+      - targets: ["fluent-bit:2020"]
+
+  - job_name: promtail
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["promtail:9080"]
+
   - job_name: grafana
     metrics_path: /metrics
     static_configs:
       - targets: ["grafana:3000"]
 
+  # -------------------------------------------------------------------------
+  # Toxiproxy - the fault injection point.
+  #
+  # Scraped because a fault that was injected and a fault that occurred look
+  # identical from every other signal in this stack. toxiproxy_proxy_received_bytes
+  # and the per-proxy connection counters are the record of what the experiment
+  # actually did, on the same time axis as its consequences - so an unexplained
+  # latency spike can be attributed to a toxic still being active rather than
+  # investigated as a real regression.
+  # -------------------------------------------------------------------------
+  - job_name: toxiproxy
+    static_configs:
+      - targets: ["toxiproxy:8474"]
+
   # Kong is deliberately absent. Its admin port serves no Prometheus endpoint
-  # unless the `prometheus` plugin is enabled in kong.yml, and it sits on the
-  # edge network rather than this one - so scraping it means both a gateway
-  # change and a network change. Gateway metrics belong with a revision of
-  # step 06, not bolted on here where the job would simply show as down.
+  # unless the `prometheus` plugin is enabled in kong.yml, so scraping it means
+  # a gateway change. Gateway metrics belong with a revision of step 06, not
+  # bolted on here where the job would simply show as down.
+  #
+  # k6 is absent for a different reason: it pushes rather than being pulled. A
+  # load test is a process with a beginning and an end, so a scrape target that
+  # exists only during a run would spend most of its life reported as down. It
+  # remote-writes to /api/v1/write instead - which is what
+  # --web.enable-remote-write-receiver on this server is for, alongside Tempo's
+  # metrics generator.
 
 # ---------------------------------------------------------------------------
 # Long-term storage.

@@ -206,7 +206,15 @@ problem can be found without guessing.
 
 ## 5. Port allocation
 
-One host, so ports must not collide. Ports are assigned once, here.
+Two distinct kinds of address, and conflating them is the source of most wiring confusion.
+
+**Inside `lab-net`**, every component addresses every other by its compose name on the port the
+process actually listens on — `postgres:5432`, `order-service:8081`, `keycloak:8080`. Those never
+collide, because each container has its own address space.
+
+**Published to the host**, in the table below, purely so a person can open a browser or run `curl`.
+These are the ones that must not collide, because they all land on one loopback interface. Nothing in
+the stack talks to anything else through them.
 
 | Component | Host port | Notes |
 | --- | --- | --- |
@@ -244,9 +252,34 @@ One host, so ports must not collide. Ports are assigned once, here.
 | MinIO console | 9001 | |
 | Fluentd forward | 24224 | |
 | Fluent Bit HTTP | 2020 | Monitoring endpoint |
+| **Toxiproxy control API** | **8474** | Fault injection. Unauthenticated and able to break every dependency — hence loopback |
 
 Tempo, Jaeger and Zipkin accept traces from the Collector over the internal Docker network; only
 their UIs and query APIs are published to the host.
+
+k6 publishes nothing: it is a `run --rm` container inside the network that remote-writes its metrics
+to Prometheus.
+
+### 5.1 Toxiproxy's internal ports
+
+Not published, and listed because they are the addresses the services actually resolve. Each is the
+real port with a distinguishing prefix, so a connection string stays recognisable:
+
+| Proxy | Listens on `toxiproxy` | Forwards to |
+| --- | --- | --- |
+| `postgres` | 15432 | `postgres:5432` |
+| `oracle` | 11521 | `oracle:1521` |
+| `redis` | 16379 | `redis:6379` |
+| `kafka` | 19092 | `kafka:9094` — the broker's dedicated `PROXY` listener |
+| `minio` | 19000 | `minio:9000` |
+| `inventory-http` | 8082 | `inventory-service:8082` |
+| `inventory-grpc` | 9082 | `inventory-service:9082` |
+
+The last two keep the service's own port numbers, because the Inventory Service advertises
+`toxiproxy` as its address in Consul and callers are handed a `host:port` pair from the registry. The
+Kafka one cannot: a client bootstrapping through a proxy must be handed the proxy's address by the
+broker, or it reconnects past it — which is why that listener exists. See
+[Simulation.md](Simulation.md).
 
 ## 6. API conventions
 

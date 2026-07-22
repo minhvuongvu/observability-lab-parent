@@ -139,14 +139,25 @@ of log volume across three pipelines.
 ## 3. Three pipelines
 
 ```
-services ──> logs/*.json ──┬──> Promtail   ──> Loki        ──> Grafana
-                           ├──> Fluent Bit ──> Loki        ──> Grafana
-                           └──> Fluentd    ──> OpenSearch  ──> OpenSearch Dashboards
+services ──> lab-logs volume ──┬──> Promtail   ──> Loki        ──> Grafana
+             /var/log/lab/*.json ├──> Fluent Bit ──> Loki        ──> Grafana
+                               └──> Fluentd    ──> OpenSearch  ──> OpenSearch Dashboards
 ```
 
-All three read the **same files**. That duplication is the point — the lab exists to make the
-differences concrete — so each agent stamps the record with the pipeline that carried it. Without
-that they would be indistinguishable in Loki and look like every log had been ingested twice.
+All three read the **same files**, on a named Docker volume the services write and the agents mount
+read-only. That duplication is the point — the lab exists to make the differences concrete — so each
+agent stamps the record with the pipeline that carried it. Without that they would be
+indistinguishable in Loki and look like every log had been ingested twice.
+
+The volume replaced a bind mount to `<repo>/logs`, which was how it had to work while the services
+were processes on the host. Two reasons it was worth changing: it put a hop of the log pipeline
+outside the Docker network, and on Docker Desktop every write went through a filesystem translation
+layer slow enough to distort the very latency being measured.
+
+Under the `dev` profile the services **also** log JSON to stdout, so `docker logs lab-order-service`
+shows the same records in the same shape the agents ship. Switching the agents to the container log
+driver would therefore be a configuration change and nothing else; the file pipeline is kept because
+tailing a file is what these three agents are actually deployed to do.
 
 | Agent | Written in | Why you would pick it |
 | --- | --- | --- |
@@ -198,7 +209,8 @@ Loki, both agents and Grafana start with the normal bring-up:
 
 ```bash
 ./scripts/infra.sh up          # or: docker compose up -d
-./scripts/run-service.sh order-service      # writes logs/order-service.json
+./scripts/infra.sh up      # services write /var/log/lab/*.json on the lab-logs volume,
+                           # which all three shipping agents mount read-only
 ```
 
 | UI | Address |
@@ -250,7 +262,8 @@ curl -s -X POST http://localhost:8081/api/v1/orders \
   -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' \
   -d '{"customerId":"C-1","currency":"EUR","items":[{"productSku":"SKU-1","quantity":1,"unitPrice":"9.99"}]}'
 
-grep demo-1 logs/order-service.json | head -1 | python3 -m json.tool
+docker exec lab-order-service grep demo-1 /var/log/lab/order-service.json \
+  | head -1 | python3 -m json.tool
 
 # The same record through each pipeline
 for p in promtail fluent-bit; do

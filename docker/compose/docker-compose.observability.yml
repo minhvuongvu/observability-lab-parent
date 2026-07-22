@@ -9,9 +9,18 @@
 #   services -> JSON file -> Fluent Bit -> Loki
 #   services -> JSON file -> Fluentd    -> OpenSearch   (profile: search)
 #
-# The services run on the host and write JSON into <repo>/logs; every agent
-# bind-mounts that directory read-only. Once the services are containerised the
-# agents read the container log driver instead and nothing else changes.
+# The services write JSON into /var/log/lab on the lab-logs volume, declared in
+# docker-compose.services.yml; every agent mounts that same volume read-only.
+# This replaced a bind mount to <repo>/logs, which was how it had to work while
+# the services were processes on the host - and which put a hop of the log
+# pipeline outside the network and through Docker Desktop's filesystem
+# translation layer, slow enough to distort the latency being measured.
+#
+# The services also log JSON to stdout under the dev profile, so `docker logs`
+# and the shipped records show the same lines in the same shape. Switching the
+# agents to the container log driver would therefore be a config change here and
+# nothing else - the file pipeline is kept because tailing a file is what these
+# three agents are actually deployed to do.
 #
 # Memory is the reason for the `search` profile. Loki, its two agents and
 # Grafana together need about a gigabyte and start with the normal `up`.
@@ -45,7 +54,7 @@ services:
       - ../../infrastructure/loki/loki.yml:/etc/loki/loki.yml:ro
       - loki-data:/loki
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready | grep -q ready"]
       interval: 10s
@@ -72,12 +81,28 @@ services:
       - ../../infrastructure/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
       # Read-only: an agent that can write to the logs it reads can corrupt the
       # evidence it exists to preserve.
-      - ../../logs:/var/log/lab:ro
+      - lab-logs:/var/log/lab:ro
       - promtail-data:/var/lib/promtail
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9080/ready | grep -q Ready"]
+      # The bash socket-redirection form, not wget: this image ships neither
+      # wget nor curl, so the obvious healthcheck reported the container
+      # unhealthy forever while Promtail was serving perfectly well. It does
+      # ship bash, which can open a TCP connection by itself - the same
+      # technique the Keycloak healthcheck uses, for the same reason.
+      #
+      # Note the fd: 0, not 3. `grep` reads standard input, so the socket has to
+      # BE standard input. Bound to fd 3 the request is sent correctly and grep
+      # then reads the container's empty stdin and fails - a check that looks
+      # right, connects successfully, and always reports unhealthy.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          { printf 'GET /ready HTTP/1.0\r\n\r\n' >&0;
+          grep -q '200'; } 0<>/dev/tcp/127.0.0.1/9080
       interval: 15s
       timeout: 5s
       retries: 10
@@ -102,16 +127,27 @@ services:
     volumes:
       - ../../infrastructure/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
       - ../../infrastructure/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
-      - ../../logs:/var/log/lab:ro
+      - lab-logs:/var/log/lab:ro
       - fluent-bit-data:/var/lib/fluent-bit
     networks:
-      - lab-observability
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:2020/api/v1/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
+      - lab-net
+    # No healthcheck, deliberately.
+    #
+    # This image contains exactly two executables - the fluent-bit binary and
+    # update-ca-certificates - and no shell, no wget, no curl. There is
+    # therefore no way to ask it from the inside whether it is serving. The
+    # previous CMD-SHELL check could not even start ("/bin/sh: no such file or
+    # directory") and reported the container unhealthy permanently, which
+    # blocked `infra.sh up` from ever completing while Fluent Bit was working.
+    #
+    # `fluent-bit --version` would pass here and is worse than nothing: it
+    # proves the binary is intact, not that the process is shipping logs, so it
+    # would report healthy through a total outage.
+    #
+    # It is not unmonitored. Prometheus scrapes its metrics endpoint on 2020
+    # (job `fluent-bit`), which is a real external check by the component whose
+    # job that is - and `up == 0` there is the signal, on the same dashboard as
+    # everything else.
     deploy:
       resources:
         limits:
@@ -135,10 +171,10 @@ services:
         condition: service_healthy
     volumes:
       - ../../infrastructure/fluentd/fluent.conf:/fluentd/etc/fluent.conf:ro
-      - ../../logs:/var/log/lab:ro
+      - lab-logs:/var/log/lab:ro
       - fluentd-data:/var/lib/fluentd
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -174,7 +210,7 @@ services:
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
       interval: 15s
@@ -200,7 +236,7 @@ services:
     ports:
       - "${BIND_HOST}:${OPENSEARCH_DASHBOARDS_PORT}:5601"
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -235,7 +271,7 @@ services:
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
       interval: 15s
@@ -260,7 +296,7 @@ services:
     ports:
       - "${BIND_HOST}:${KIBANA_PORT}:5601"
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -289,10 +325,10 @@ services:
       # graph it derives from spans. Without this receiver those writes are
       # rejected and the service-graph panels stay empty.
       - --web.enable-remote-write-receiver
-    extra_hosts:
-      # The services run on the host; this is how a container reaches them,
-      # exactly as Consul does to health-check them.
-      - "host.docker.internal:host-gateway"
+    # No extra_hosts. The service targets in prometheus.yml are compose names on
+    # lab-net now. The remote-write receiver above serves a second purpose since
+    # the simulation stack arrived: k6 remote-writes its own metrics here, which
+    # is what puts a load test and its effect on one time axis.
     ports:
       - "${BIND_HOST}:${PROMETHEUS_PORT}:9090"
     volumes:
@@ -300,7 +336,7 @@ services:
       - ../../infrastructure/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9090/-/healthy | grep -q Healthy"]
       interval: 15s
@@ -336,7 +372,7 @@ services:
     volumes:
       - victoriametrics-data:/victoria-metrics-data
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8428/health | grep -q OK"]
       interval: 15s
@@ -372,7 +408,7 @@ services:
     volumes:
       - ../../infrastructure/otel-collector/otel-collector.yml:/etc/otel/otel-collector.yml:ro
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD", "/otelcol-contrib", "--version"]
       interval: 15s
@@ -403,7 +439,7 @@ services:
       - ../../infrastructure/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
       - tempo-data:/var/tempo
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -431,7 +467,7 @@ services:
     ports:
       - "${BIND_HOST}:${JAEGER_UI_PORT}:16686"
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -454,7 +490,7 @@ services:
     ports:
       - "${BIND_HOST}:${ZIPKIN_PORT}:9411"
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -487,13 +523,17 @@ services:
       - ../../infrastructure/pyroscope/pyroscope.yml:/etc/pyroscope/pyroscope.yml:ro
       - pyroscope-data:/data
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:4040/ready | grep -q ready"]
+      # profilecli, which ships in this image, rather than wget, which does not
+      # - there is no shell here either. A series query is a genuine end-to-end
+      # check: it goes over HTTP to the server and reads back from storage, so
+      # it fails if either half is broken.
+      test: ["CMD", "/usr/bin/profilecli", "query", "series", "--url=http://127.0.0.1:4040"]
       interval: 15s
-      timeout: 5s
+      timeout: 10s
       retries: 10
-      start_period: 20s
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -558,7 +598,7 @@ services:
       - ../../infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health | grep -q ok"]
       interval: 15s
@@ -594,7 +634,7 @@ services:
       - ../../infrastructure/alertmanager/templates:/etc/alertmanager/templates:ro
       - alertmanager-data:/alertmanager
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:9093/-/healthy | grep -q OK"]
       interval: 15s
@@ -626,7 +666,7 @@ services:
       - "${BIND_HOST}:${MAILPIT_UI_PORT}:8025"
       - "${BIND_HOST}:${MAILPIT_SMTP_PORT}:1025"
     networks:
-      - lab-observability
+      - lab-net
     healthcheck:
       test: ["CMD", "/mailpit", "readyz"]
       interval: 15s
@@ -656,7 +696,7 @@ services:
     ports:
       - "${BIND_HOST}:${ALERT_WEBHOOK_PORT}:8080"
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -665,12 +705,16 @@ services:
   # -------------------------------------------------------------------------
   # Exporters (step 16).
   #
-  # Each is a deliberate, narrow bridge from lab-observability into lab-data.
-  # The network separation elsewhere in this stack says a log shipper has no
-  # business reaching a database; an exporter is the documented exception, and
-  # it pays for that with a read-only credential that cannot see one
-  # application row. See the init scripts under infrastructure/postgres and
-  # infrastructure/oracle for what those roles actually grant.
+  # Each holds a read-only credential scoped to statistics, which cannot see a
+  # single application row - see the init scripts under infrastructure/postgres
+  # and infrastructure/oracle for what those roles actually grant.
+  #
+  # Every one of them addresses its datastore DIRECTLY, never through Toxiproxy.
+  # That is the most useful property of the simulation setup: with a toxic
+  # applied, the exporter reports a perfectly healthy database while the service
+  # reports timeouts, and the disagreement localises the fault to the path
+  # rather than the datastore. A monitor sharing the application's network path
+  # could not tell you that, because it would be broken in the same way.
   # -------------------------------------------------------------------------
 
   # Host CPU, memory and disk. Note what this measures on Docker Desktop: the
@@ -714,7 +758,7 @@ services:
       # and on Linux alike, and the lab never mounts a new filesystem mid-run.
       - /:/host/root:ro
     networks:
-      - lab-observability
+      - lab-net
     deploy:
       resources:
         limits:
@@ -730,8 +774,7 @@ services:
       DATA_SOURCE_NAME: "postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_SUPERUSER_DB}?sslmode=disable"
       PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
     networks:
-      - lab-observability
-      - lab-data
+      - lab-net
     depends_on:
       postgres:
         condition: service_healthy
@@ -759,8 +802,7 @@ services:
     volumes:
       - ../../infrastructure/oracle/exporter-metrics.toml:/etc/oracle/exporter-metrics.toml:ro
     networks:
-      - lab-observability
-      - lab-data
+      - lab-net
     depends_on:
       oracle:
         condition: service_healthy
@@ -777,8 +819,7 @@ services:
       REDIS_ADDR: "redis://redis:6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
     networks:
-      - lab-observability
-      - lab-data
+      - lab-net
     depends_on:
       redis:
         condition: service_healthy
@@ -799,8 +840,7 @@ services:
       - --topic.filter=.*
       - --group.filter=.*
     networks:
-      - lab-observability
-      - lab-data
+      - lab-net
     depends_on:
       kafka:
         condition: service_healthy
@@ -809,15 +849,9 @@ services:
         limits:
           memory: 128M
 
-networks:
-  # The observability stack talks to itself and is reached from the host. It is
-  # deliberately not on lab-data: a log shipper has no business being able to
-  # reach PostgreSQL or Oracle.
-  lab-observability:
-    name: lab-observability
-    driver: bridge
-
 volumes:
+  # lab-logs, the volume the three agents above tail, is declared in
+  # docker-compose.services.yml - beside the services that write to it.
   alertmanager-data:
     name: lab-alertmanager-data
   pyroscope-data:

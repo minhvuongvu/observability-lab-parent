@@ -28,8 +28,11 @@ git-ignored. Neither is a dependency of any module; they instrument the applicat
 
 ```bash
 ./scripts/agents.sh all                       # resolve every agent
-./scripts/run-service.sh order-service        # attaches both
-PYROSCOPE_ENABLED=false ./scripts/run-service.sh order-service   # profiling off
+./scripts/infra.sh up      # both agents are baked into the image at /opt/agents and
+                           # attached via JAVA_TOOL_OPTIONS in docker-compose.services.yml
+
+# To profile without them, drop the -javaagent from that variable. It is one line
+# per service, and no image rebuild — which is the reason the flags live there.
 ```
 
 ---
@@ -142,7 +145,9 @@ NOW=$(python3 -c 'import time;print(int(time.time()*1000))'); FROM=$((NOW - 6000
 curl -s "http://localhost:4040/pyroscope/render?query=process_cpu:cpu:nanoseconds:cpu:nanoseconds{service_name=\"order-service\"}&from=${FROM}&until=${NOW}&format=json"
 
 # What the agent actually resolved
-PYROSCOPE_LOG_LEVEL=debug ./scripts/run-service.sh order-service
+# Add PYROSCOPE_LOG_LEVEL=debug to the service's environment in
+# docker/compose/docker-compose.services.yml, then:
+./scripts/infra.sh up -d order-service
 ```
 
 | UI | Address |

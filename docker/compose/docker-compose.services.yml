@@ -1,0 +1,323 @@
+# ===========================================================================
+# Observability Lab - the application tier.
+#
+# The two Spring Boot services, containerised. Before this file they ran on the
+# developer's machine and every container that needed to reach them did so
+# through host.docker.internal - which meant the lab was not one system but two
+# halves joined by the host's network stack, and the halves failed differently.
+#
+# Everything now lives on lab-net. That is what makes the simulation stack in
+# docker-compose.simulation.yml possible: you cannot put a fault proxy in front
+# of a dependency, or cap a service's CPU, when the service is a process on a
+# laptop.
+#
+#   ../../scripts/infra.sh up          build and start everything
+#   ../../scripts/infra.sh build       rebuild the two images
+#
+# The images build from the repository root through docker/service/Dockerfile;
+# see .dockerignore for what the build context excludes.
+# ===========================================================================
+
+services:
+
+  # -------------------------------------------------------------------------
+  # Order Service - PostgreSQL, Kafka producer, Redis cache, MinIO invoices,
+  # Feign and gRPC client of the Inventory Service.
+  # -------------------------------------------------------------------------
+  order-service:
+    build:
+      context: ../..
+      dockerfile: docker/service/Dockerfile
+      args:
+        SERVICE: order-service
+        HTTP_PORT: "8081"
+    image: lab-order-service:${LAB_SERVICE_TAG}
+    container_name: lab-order-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      # One-shots, not long-running services. Waiting for them to *complete*
+      # means the service never starts against a broker with no topics or an
+      # object store with no bucket - both of which fail at the first request
+      # rather than at startup, which is far harder to attribute.
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      consul-init:
+        condition: service_completed_successfully
+      toxiproxy:
+        condition: service_healthy
+    environment:
+      # dev, not local: the local profile writes a human-readable console and
+      # JSON only to the file. In a container nothing reads the console
+      # directly, so both carry JSON and `docker logs` shows the same records
+      # the shipping agents carry. See logback-spring.xml.
+      SPRING_PROFILES_ACTIVE: ${SERVICE_PROFILE}
+
+      # --- Dependencies -----------------------------------------------------
+      # Every address below is a name on lab-net. Nothing resolves through the
+      # host, which is the entire point of this file.
+      #
+      # The datastore hops address Toxiproxy rather than the datastore, so
+      # latency, packet loss and connection resets can be injected at runtime
+      # without restarting anything. With no toxics configured - the default -
+      # it is a transparent TCP relay. Set these to the real service names to
+      # take it out of the path entirely.
+      ORDER_DB_HOST: ${ORDER_DB_HOST}
+      ORDER_DB_PORT: ${ORDER_DB_PORT}
+      ORDER_DB_NAME: ${ORDER_DB_NAME}
+      ORDER_DB_USER: ${ORDER_DB_USER}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD}
+
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      # The address this instance registers in Consul, and therefore the address
+      # the Inventory Service's clients are handed. Its own compose service
+      # name - resolvable by every container on lab-net, including Consul,
+      # which HTTP-health-checks it back on this address.
+      SERVICE_HOSTNAME: order-service
+
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      # The bucket-scoped account provisioned by minio-init, never MinIO root.
+      MINIO_ACCESS_KEY: ${MINIO_APP_USER}
+      MINIO_SECRET_KEY: ${MINIO_APP_PASSWORD}
+      MINIO_INVOICE_BUCKET: ${MINIO_INVOICE_BUCKET}
+
+      # --- Identity ---------------------------------------------------------
+      # One issuer string, used from inside the network, so a token minted by
+      # k6 and a token minted by scripts/token.sh carry an identical `iss` and
+      # both the gateway and the services accept both. See docs/Keycloak.md.
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI}
+
+      # --- Logging ----------------------------------------------------------
+      # The lab-logs volume, shared read-only with Promtail, Fluent Bit and
+      # Fluentd. Replaces the <repo>/logs bind mount the host-run setup used.
+      LOG_DIR: /var/log/lab
+
+      # --- Agents -----------------------------------------------------------
+      # Both javaagents are baked into the image at /opt/agents. Passing them
+      # through JAVA_TOOL_OPTIONS rather than through the ENTRYPOINT keeps the
+      # whole runtime configuration in this file: dropping an agent is a line
+      # edit here, not an image rebuild.
+      #
+      # MaxRAMPercentage, not -Xmx: the JVM then sizes the heap from the memory
+      # limit set under deploy.resources below, so changing the limit changes
+      # the heap and the two cannot drift apart.
+      JAVA_TOOL_OPTIONS: >-
+        -javaagent:/opt/agents/opentelemetry-javaagent.jar
+        -javaagent:/opt/agents/pyroscope.jar
+        -XX:MaxRAMPercentage=70
+        -XX:+ExitOnOutOfMemoryError
+
+      OTEL_SERVICE_NAME: order-service
+      OTEL_RESOURCE_ATTRIBUTES: service.name=order-service,service.namespace=observability-lab,deployment.environment=${OTEL_ENVIRONMENT}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      # Traces only. Prometheus scrapes the metrics and the file pipeline
+      # carries the logs; exporting either here would double-count them.
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_INSTRUMENTATION_LOGBACK_MDC_ENABLED: "true"
+      OTEL_INSTRUMENTATION_COMMON_MDC_TRACE_ID_KEY: trace_id
+      OTEL_INSTRUMENTATION_COMMON_MDC_SPAN_ID_KEY: span_id
+      # Pyroscope's OTel extension, loaded by the OTel agent. It stamps the
+      # active span id onto the profiling labels, which is what turns "this
+      # span was slow" into "and here is the flame graph of the CPU it burned".
+      OTEL_JAVAAGENT_EXTENSIONS: /opt/agents/pyroscope-otel.jar
+
+      PYROSCOPE_APPLICATION_NAME: order-service
+      PYROSCOPE_SERVER_ADDRESS: http://pyroscope:4040
+      # JFR, not the collapsed format: with collapsed the agent records exactly
+      # one event type, so choosing CPU means giving up allocation and locks.
+      PYROSCOPE_FORMAT: jfr
+      # itimer rather than cpu - it samples on a wall clock, so blocked time is
+      # attributed too. On a service that spends its life waiting on a database
+      # `cpu` produces a flame graph of almost nothing, which is exactly the
+      # case the simulation stack manufactures.
+      PYROSCOPE_PROFILER_EVENT: itimer
+      PYROSCOPE_PROFILER_ALLOC: 512k
+      PYROSCOPE_PROFILER_LOCK: 10ms
+      PYROSCOPE_ALLOC_LIVE: "true"
+      PYROSCOPE_LABELS: service=order-service,environment=${OTEL_ENVIRONMENT}
+      PYROSCOPE_UPLOAD_INTERVAL: 10s
+    ports:
+      # Published for a browser and for curl. Nothing in the stack reaches this
+      # service through the host - Kong, Prometheus and Consul all address it
+      # by name on lab-net.
+      - "${BIND_HOST}:${ORDER_SERVICE_PORT}:8081"
+    volumes:
+      - lab-logs:/var/log/lab
+    networks:
+      - lab-net
+    healthcheck:
+      # Readiness, not liveness: this is what depends_on and Kong both want to
+      # know - whether the service can serve, not whether the process exists.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          # Deliberately modest. A service with room to spare never exhibits GC
+          # pressure, heap alerts or an OOM kill - and those are three of the
+          # things this lab exists to make visible. Raise it to watch a symptom
+          # disappear; that is a legitimate experiment.
+          cpus: "${ORDER_SERVICE_CPUS}"
+          memory: ${ORDER_SERVICE_MEMORY}
+
+  # -------------------------------------------------------------------------
+  # Inventory Service - Oracle, Kafka consumer, Redis, and the gRPC provider of
+  # inventory.v1.InventoryService.
+  # -------------------------------------------------------------------------
+  inventory-service:
+    build:
+      context: ../..
+      dockerfile: docker/service/Dockerfile
+      args:
+        SERVICE: inventory-service
+        HTTP_PORT: "8082"
+        GRPC_PORT: "9082"
+    image: lab-inventory-service:${LAB_SERVICE_TAG}
+    container_name: lab-inventory-service
+    restart: unless-stopped
+    depends_on:
+      oracle:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      consul-init:
+        condition: service_completed_successfully
+      toxiproxy:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SERVICE_PROFILE}
+
+      ORACLE_DB_HOST: ${ORACLE_DB_HOST}
+      ORACLE_DB_PORT: ${ORACLE_DB_PORT}
+      ORACLE_PDB: ${ORACLE_PDB}
+      INVENTORY_DB_USER: ${INVENTORY_DB_USER}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD}
+
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+
+      CONSUL_HOST: consul
+      CONSUL_PORT: 8500
+      # The address this instance advertises, and the one the Order Service's
+      # Feign client and gRPC channel are therefore handed by the registry.
+      #
+      # It defaults to `toxiproxy`, not `inventory-service`. That is what puts
+      # the service-to-service hop behind the fault proxy, so latency or a
+      # connection reset can be injected into it at runtime - and simulating a
+      # slow dependency is most of the reason this lab exists. It is also how a
+      # service mesh behaves: an instance behind Envoy advertises the sidecar,
+      # not itself.
+      #
+      # Consul health-checks this address too, which is correct: if the path to
+      # the service is broken then the service is unreachable, whatever the
+      # process itself thinks. Set INVENTORY_ADVERTISE_HOST=inventory-service in
+      # .env for the direct path.
+      SERVICE_HOSTNAME: ${INVENTORY_ADVERTISE_HOST}
+
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI}
+
+      LOG_DIR: /var/log/lab
+
+      # 0.0.0.0, where the host-run path used loopback. The comment in
+      # application.yml called this out as the setting that stops being safe
+      # once containerised - which is why the gRPC port authenticates every
+      # call with the same JwtDecoder the HTTP resource server uses. The
+      # network is not the control.
+      GRPC_PORT: "9082"
+      GRPC_BIND_ADDRESS: 0.0.0.0
+
+      JAVA_TOOL_OPTIONS: >-
+        -javaagent:/opt/agents/opentelemetry-javaagent.jar
+        -javaagent:/opt/agents/pyroscope.jar
+        -XX:MaxRAMPercentage=70
+        -XX:+ExitOnOutOfMemoryError
+
+      OTEL_SERVICE_NAME: inventory-service
+      OTEL_RESOURCE_ATTRIBUTES: service.name=inventory-service,service.namespace=observability-lab,deployment.environment=${OTEL_ENVIRONMENT}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_INSTRUMENTATION_LOGBACK_MDC_ENABLED: "true"
+      OTEL_INSTRUMENTATION_COMMON_MDC_TRACE_ID_KEY: trace_id
+      OTEL_INSTRUMENTATION_COMMON_MDC_SPAN_ID_KEY: span_id
+      OTEL_JAVAAGENT_EXTENSIONS: /opt/agents/pyroscope-otel.jar
+
+      PYROSCOPE_APPLICATION_NAME: inventory-service
+      PYROSCOPE_SERVER_ADDRESS: http://pyroscope:4040
+      PYROSCOPE_FORMAT: jfr
+      PYROSCOPE_PROFILER_EVENT: itimer
+      PYROSCOPE_PROFILER_ALLOC: 512k
+      PYROSCOPE_PROFILER_LOCK: 10ms
+      PYROSCOPE_ALLOC_LIVE: "true"
+      PYROSCOPE_LABELS: service=inventory-service,environment=${OTEL_ENVIRONMENT}
+      PYROSCOPE_UPLOAD_INTERVAL: 10s
+    ports:
+      - "${BIND_HOST}:${INVENTORY_SERVICE_PORT}:8082"
+      # gRPC, published so grpcurl can be pointed at it from the host. The port
+      # still requires a bearer token; publishing it is not what protects it.
+      - "${BIND_HOST}:${INVENTORY_GRPC_PORT}:9082"
+    volumes:
+      - lab-logs:/var/log/lab
+    networks:
+      - lab-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8082/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "${INVENTORY_SERVICE_CPUS}"
+          memory: ${INVENTORY_SERVICE_MEMORY}
+
+volumes:
+  # The JSON log files, written by the services and tailed by all three
+  # shipping agents. A named volume rather than a bind mount to <repo>/logs:
+  # the files are produced inside the network and consumed inside it, so
+  # routing them through the host filesystem would put a component of the
+  # pipeline outside the network for no benefit - and on Docker Desktop it
+  # would also put every write through a filesystem translation layer, which is
+  # slow enough to distort exactly the latency measurements this lab takes.
+  lab-logs:
+    name: lab-logs

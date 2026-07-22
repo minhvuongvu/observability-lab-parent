@@ -22,17 +22,28 @@ The Consul container has existed since step 02; this step is where the services 
 
 ## 2. Service registration
 
-Each service registers with Consul on startup and deregisters on shutdown. The agent's address comes
-from `CONSUL_HOST`/`CONSUL_PORT` (default `localhost:8500`), which `./scripts/run-service.sh` derives
-from `docker/compose/.env` — so a machine that publishes Consul on another port stays consistent
-without editing tracked files.
+Each service registers with Consul on startup and deregisters on shutdown. The agent's address is
+`consul:8500` — a name on `lab-net`, since every component of the lab is a container on it.
 
-The important subtlety is the **address it advertises**: the services run on the host while Consul
-runs in a container, so Consul must be able to reach *back* to health-check them. They register as
-`host.docker.internal` (`spring.cloud.consul.discovery.hostname`), the same name the gateway uses for
-its upstreams, and the `consul` container is given `extra_hosts: host.docker.internal:host-gateway`
-so it resolves. Once the services are themselves containerised, this becomes their compose service
-name and nothing else changes.
+The important subtlety is the **address it advertises**
+(`spring.cloud.consul.discovery.hostname`, set from `SERVICE_HOSTNAME`), because Consul must be able
+to reach *back* to health-check it and other services connect to whatever the registry hands them.
+The two services answer that question differently, and the difference is deliberate:
+
+| Service | Advertises | Why |
+| --- | --- | --- |
+| `order-service` | `order-service` | Its own compose name. Nothing needs to intercept traffic to it |
+| `inventory-service` | `toxiproxy` | So the service-to-service hop runs through the fault proxy and can be made slow or broken at runtime |
+
+The second is not a hack — it is exactly what a service mesh sidecar does: an instance behind Envoy
+advertises the sidecar's address, not its own. It also means Consul's health check runs through the
+proxy, which is correct: if the path to a service is broken then the service is unreachable, whatever
+the process itself believes.
+
+Set `INVENTORY_ADVERTISE_HOST=inventory-service` in `docker/compose/.env` for the direct path.
+
+This used to be `host.docker.internal`, because the services were processes on the developer's
+machine — see §7 for why that address could never quite work.
 
 Registration details:
 
@@ -45,7 +56,7 @@ Registration details:
 
 ## 3. Health checks
 
-Consul is told to poll `http://host.docker.internal:<port>/actuator/health` every 10s
+Consul is told to poll `http://<advertised-host>:<port>/actuator/health` every 10s
 (`health-check-path`, `health-check-interval`). That endpoint is deliberately open (the resource
 server permits `/actuator/**`), so the check needs no token. A service that stops answering `UP` is
 marked failing in the catalog within a couple of intervals.
@@ -121,12 +132,13 @@ exercises it — see [Kafka.md](Kafka.md) for how the asynchronous half of the s
 
 Two things about registration turned out to matter only once something resolved it:
 
-- **The advertised address must work from both sides.** Consul health-checks the service from inside
-  its container, and other services reach it from wherever they run. `host.docker.internal` satisfies
-  only the first — it does not resolve on the host — so discovery handed callers an address they
-  could not connect to. `./scripts/run-service.sh` therefore sets `SERVICE_HOSTNAME` to the machine's
-  own LAN address, which satisfies both, and falls back to `host.docker.internal` when it cannot
-  determine one. Once the services are containerised this becomes their compose service name.
+- **The advertised address must work from both sides.** Consul health-checks the service, and other
+  services connect to whatever the catalog hands them; both have to be able to reach it. While the
+  services ran on the host this was genuinely awkward — `host.docker.internal` resolves from inside a
+  container but not on the host, so discovery handed callers an address they could not connect to,
+  and `run-service.sh` had to substitute the machine's own LAN address to satisfy both.
+  Containerising the services deleted the problem: a compose name resolves identically from every
+  container on `lab-net`, which is every component there is.
 - **`query-passing: true`.** Without it the catalog returns every registered instance including the
   ones Consul already knows are failing, which makes the health check decorative. With it, an
   instance is routed to only while its check passes — and a service that has just started is

@@ -10,6 +10,9 @@
 #     TOKEN=$(./scripts/token.sh manager)
 #     curl -H "Authorization: Bearer ${TOKEN}" http://localhost/api/v1/orders
 #
+# The token's issuer is http://keycloak:8080/realms/observability - an address
+# on the Docker network, not on the host. See the block below for why.
+#
 # Only the token is written to stdout, so command substitution captures it
 # cleanly; everything else goes to stderr.
 #
@@ -30,15 +33,33 @@ if [ -f "${ENV_FILE}" ]; then
   # shellcheck disable=SC1090
   set -a; . "${ENV_FILE}"; set +a
 fi
-# Built from the published port rather than hard-coded, so this asks the same
-# Keycloak the services validate against when the lab has been moved off 8080.
-KEYCLOAK_ISSUER="${KEYCLOAK_ISSUER:-http://${BIND_HOST:-127.0.0.1}:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:-observability}}"
+# ---------------------------------------------------------------------------
+# Two different addresses, and the distinction is the whole subtlety here.
+#
+# Keycloak derives the `iss` claim from the Host header of the request that
+# minted the token. Everything in the stack - both services, Kong's JWT
+# consumer, k6 - reaches Keycloak as `keycloak:8080` on lab-net and validates
+# against that exact issuer string. A token fetched over localhost would carry
+# `http://localhost:8080/...` instead and be rejected with a 401 that looks like
+# an authorization bug and is actually a hostname.
+#
+# So: connect over the published port, because `keycloak` does not resolve on
+# the host - but send `Host: keycloak:8080`, so the token that comes back is
+# byte-identical to one minted from inside the network.
+# ---------------------------------------------------------------------------
+KEYCLOAK_ISSUER="${KEYCLOAK_ISSUER:-http://keycloak:8080/realms/${KEYCLOAK_REALM:-observability}}"
+# Where to actually send the bytes.
+KEYCLOAK_ADDR="http://${BIND_HOST:-127.0.0.1}:${KEYCLOAK_PORT:-8080}"
+# The Host header that makes the issuer come out right, taken from the issuer
+# itself so the two cannot drift.
+KEYCLOAK_HOST_HEADER="$(printf '%s' "${KEYCLOAK_ISSUER}" | sed -e 's|^https\{0,1\}://||' -e 's|/.*$||')"
 
 USERNAME="${1:-alice}"
 PASSWORD="${2:-${USERNAME}}"
-TOKEN_URL="${KEYCLOAK_ISSUER}/protocol/openid-connect/token"
+TOKEN_URL="${KEYCLOAK_ADDR}/realms/${KEYCLOAK_REALM:-observability}/protocol/openid-connect/token"
 
 response="$(curl -fsS -X POST "${TOKEN_URL}" \
+  -H "Host: ${KEYCLOAK_HOST_HEADER}" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d "client_id=${KEYCLOAK_CLIENT_ID}" \
   -d "username=${USERNAME}" \

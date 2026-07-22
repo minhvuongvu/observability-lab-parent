@@ -94,11 +94,19 @@ spring:
         register: true
         deregister: true
         prefer-ip-address: false
-        # The address Consul stores and health-checks back on. This service runs
-        # on the host while Consul runs in a container, so it advertises the same
-        # host.docker.internal the gateway resolves to. It becomes the compose
-        # service name once the service itself is containerised.
-        hostname: ${SERVICE_HOSTNAME:host.docker.internal}
+        # The address Consul stores, health-checks back on, and hands to the Order
+        # Service's Feign client and gRPC channel.
+        #
+        # The compose file sets this to `toxiproxy`, not to this service's own
+        # name, so the service-to-service hop runs through the fault proxy and
+        # latency or a connection reset can be injected into it at runtime. That
+        # is what a service mesh sidecar does - an instance behind Envoy
+        # advertises the sidecar, not itself - and it correctly means the health
+        # check traverses the same path the callers do.
+        #
+        # The default below is the direct address, for a run without compose.
+        # See docs/Consul.md and docs/Simulation.md.
+        hostname: ${SERVICE_HOSTNAME:inventory-service}
         health-check-path: /actuator/health
         health-check-interval: 10s
         instance-id: ${spring.application.name}:${server.port}
@@ -192,9 +200,11 @@ app:
   environment: local
 
   logging:
-    # Where the JSON log file is written. The shipping agents run in containers
-    # and bind-mount this directory, so it has to be a path both they and the
-    # service can see; ./scripts/run-service.sh points it at <repo>/logs.
+    # Where the JSON log file is written. Set to /var/log/lab in the container,
+    # which is the lab-logs volume that Promtail, Fluent Bit and Fluentd all
+    # mount read-only - so it has to be a path both they and the service can see.
+    # A run through ./scripts/run-service.sh writes to <repo>/logs instead, and
+    # those lines are therefore NOT shipped anywhere. See docs/Logging.md.
     directory: ${LOG_DIR:logs}
 
   security:

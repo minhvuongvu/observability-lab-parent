@@ -28,7 +28,8 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
 | 15 | Enterprise gRPC communication — proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
 | 16 | Alerting: rule categories, routing to email and webhook, exporters, alert guide and matrix | **Complete** |
-| **17** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
+| — | Containerisation: both services in Docker, four networks collapsed into one, k6 load generation, Toxiproxy fault injection — [Simulation.md](docs/Simulation.md) | **Complete** |
+| **17** | **In-application failure simulation: memory leaks, CPU spikes, deliberate deadlocks, DLQ, exception injection** | Planned |
 | 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 > **Numbering note.** Two steps have been inserted since the original plan, and everything after each
@@ -43,6 +44,15 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 >   paged by, and that claim is untestable until the alerts and their routing exist. Doing it the
 >   other way round means writing the chaos endpoints, then writing the alerts, then going back to
 >   re-run every scenario.
+> - **Containerisation is unnumbered**, because it is not a step in the original plan — it is the
+>   accumulated repayment of every "once the services are containerised" note the earlier steps left
+>   behind, in Kong's upstreams, Prometheus' targets, Consul's advertised address and the log
+>   pipeline's source. It arrived when it did because step 17 needs it: you cannot put a fault proxy
+>   in front of a dependency, or cap a service's CPU, when the service is a process on a laptop.
+>
+>   Step 17 is therefore now the *remainder* — the faults that can only be produced from inside the
+>   process. Everything injectable from outside it already exists in
+>   [docs/Simulation.md](docs/Simulation.md).
 >
 > Failure simulation is now step 17 and documentation step 18.
 

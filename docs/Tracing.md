@@ -29,8 +29,10 @@ hand; with the agent it is free.
 
 ```bash
 ./scripts/otel-agent.sh          # resolves the pinned agent into tools/
-./scripts/run-service.sh order-service          # attaches it automatically
-OTEL_SDK_DISABLED=true ./scripts/run-service.sh order-service    # without it
+./scripts/infra.sh up      # the agent is baked into the image and attached via
+                           # JAVA_TOOL_OPTIONS in docker-compose.services.yml
+
+# To run without it, set OTEL_SDK_DISABLED=true on the service in that file.
 ```
 
 The agent is fetched **through Maven**, not curl: the version is pinned once in the parent POM, the
@@ -199,7 +201,8 @@ curl -s -X POST http://localhost:8081/api/v1/orders \
   -d '{"customerId":"C-1","currency":"EUR","items":[{"productSku":"SKU-1","quantity":1,"unitPrice":"9.99"}]}'
 
 # The trace id the agent generated, straight from the log line
-TID=$(tail -100 logs/order-service.json | grep 'Order accepted' | tail -1 \
+TID=$(docker exec lab-order-service tail -100 /var/log/lab/order-service.json \
+      | grep 'Order accepted' | tail -1 \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["trace_id"])')
 
 # The same trace, from all three stores

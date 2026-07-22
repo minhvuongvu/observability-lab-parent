@@ -402,8 +402,8 @@ Start the stack and both services:
 ```bash
 ./scripts/infra.sh up
 ./scripts/build.sh
-./scripts/run-service.sh inventory-service     # REST :8082, gRPC :9082
-./scripts/run-service.sh order-service         # REST :8081
+./scripts/infra.sh up      # both services, containerised, on lab-net
+                           # inventory: REST :8082, gRPC :9082 — order: REST :8081
 ```
 
 ### The protocol comparison
@@ -490,7 +490,7 @@ that has never been tested against a real failure is a guess.
 | Property | Default | Note |
 | --- | --- | --- |
 | `port` | 9082 | `90xx` mirrors the `80xx` HTTP port |
-| `bind-address` | `127.0.0.1` | Widened to `0.0.0.0` by `run-service.sh`, because the instance advertises a LAN address to Consul |
+| `bind-address` | `127.0.0.1` | Set to `0.0.0.0` in the container, which is why the port authenticates: loopback was the control, and containerising removed it |
 | `executor-threads` | 16 | gRPC's own pool, separate from Tomcat's |
 | `executor-queue-capacity` | 256 | Bounded, so overload is `RESOURCE_EXHAUSTED` rather than an OOM |
 | `reflection-enabled` | `true`, **`false` under `prod`** | Reflection publishes the whole schema |

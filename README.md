@@ -29,6 +29,8 @@ becomes *"how do I find out what this system is doing right now?"*
 
 ## Architecture at a glance
 
+Everything below is a container on one Docker network, `lab-net`.
+
 ```mermaid
 flowchart TB
     Client([Client])
@@ -65,14 +67,22 @@ flowchart TB
         Grafana["Grafana"]
     end
 
+    subgraph Sim["Simulation"]
+        K6["k6<br/>load generation"]
+        Tox["Toxiproxy<br/>latency, failure, resets"]
+    end
+
     Client --> Nginx --> Kong
     Kong -. validate JWT .-> Keycloak
     Kong --> Order
+    K6 --> Order
 
-    Order -- Feign REST --> Inventory
-    Order --> Postgres
-    Order --> Redis
-    Order --> MinIO
+    Order -- Feign REST + gRPC --> Tox --> Inventory
+    Order --> Tox
+    Tox --> Postgres
+    Tox --> Redis
+    Tox --> MinIO
+    Tox --> Oracle
     Order -- order-created --> Kafka
     Kafka -- order-created --> Inventory
     Inventory --> Oracle
@@ -81,6 +91,9 @@ flowchart TB
 
     Order -. register .-> Consul
     Inventory -. register .-> Consul
+    K6 -. remote_write .-> Metrics
+    Metrics -. scrape, never via Tox .-> Apps
+    Metrics -. scrape, never via Tox .-> State
     Order -. OTLP .-> Otel
     Inventory -. OTLP .-> Otel
     Order -. profiles .-> Profiles
@@ -95,6 +108,17 @@ flowchart TB
     Traces --> Grafana
     Profiles --> Grafana
 ```
+
+Two edges in that diagram carry most of the design.
+
+Every **application** hop goes through Toxiproxy — including the service-to-service one, because the
+Inventory Service registers itself in Consul as `toxiproxy`. With no toxics configured it is a
+transparent TCP relay; the moment one is added, that hop is slow, lossy or dead, with no restart
+involved.
+
+Every **monitoring** hop does not. When a fault is injected, `postgres-exporter` keeps reporting a
+healthy database while the service reports timeouts — and that disagreement is the diagnosis: the
+fault is in the path, not the datastore.
 
 A fuller treatment — runtime topology, data ownership, the observability pipelines and the decision
 log — is in [docs/Architecture.md](docs/Architecture.md).
@@ -141,10 +165,10 @@ against OpenSearch, or Tempo against Jaeger, on the *same* traffic is the point 
 │   ├── shared-library/          cross-service platform code, no business rules
 │   ├── order-service/           order lifecycle, PostgreSQL system of record
 │   └── inventory-service/       stock levels, Oracle system of record
-├── infrastructure/              configuration for every platform and observability component
-├── docker/                      Dockerfiles and Compose definitions
+├── infrastructure/              configuration for every component, including k6 and Toxiproxy
+├── docker/                      the service Dockerfile and the five Compose files
 ├── docs/                        architecture and operations documentation
-└── scripts/                     build and operational scripts
+└── scripts/                     build, operational and simulation scripts
 ```
 
 `infrastructure/` holds *what a component is configured to do*; `docker/` holds *how it is built and
@@ -164,11 +188,15 @@ launched*. They are kept apart so either can be read without the other.
 
 | Tool | Version | Needed for |
 | --- | --- | --- |
-| JDK | 21 or newer | Building and running the services |
-| Maven | 3.9+ (or use `./mvnw`) | Building |
-| Docker + Compose | recent, **8 GB** allocated | Running the infrastructure |
+| Docker + Compose | recent, with BuildKit, **10 GB** allocated | Running the entire system |
+| JDK | 21 or newer | *Optional* — building outside Docker, or the IDE debug path |
+| Maven | 3.9+ (or use `./mvnw`) | *Optional* — same |
 
-Oracle accounts for most of that memory figure. 6 GB works; below that it will not start.
+Docker is the only hard requirement. The services are compiled inside their image, so a fresh clone
+needs nothing but Docker to bring the whole system up.
+
+Oracle and the two services account for most of the memory figure. 8 GB works; below that Oracle will
+not start.
 
 The build compiles to Java 21 bytecode and enforces the toolchain floor, so an older JDK fails fast
 with a message rather than a confusing compilation error.
@@ -180,6 +208,10 @@ Check your machine:
 ```
 
 ## Build
+
+Building locally is **optional** — `./scripts/infra.sh up` compiles both services inside their image
+and needs no JDK on the machine. Build here when you want the tests, or to iterate faster than an
+image rebuild:
 
 ```bash
 ./scripts/build.sh          # resolves a JDK 21 toolchain, then runs clean verify
@@ -193,38 +225,72 @@ or drive Maven directly if your `JAVA_HOME` already points at JDK 21:
 
 This compiles all modules, runs the tests and produces an executable jar per service.
 
-## Run the infrastructure
+## Run the system
 
-Ten containers — gateway, proxy, identity, registry, two databases, broker, cache and object storage
-— come up as one stack:
+**One command starts everything.** Both services, the gateway, identity, registry, two databases, the
+broker, cache, object storage, the whole observability stack and the fault proxy — 35 containers, all
+on one Docker network, `lab-net`. Nothing runs outside it.
 
 ```bash
-./scripts/infra.sh up        # start and wait until every container is healthy
+./scripts/infra.sh up        # build, start, wait until every container is healthy
 ./scripts/infra.sh health    # one line per container
 ./scripts/infra.sh urls      # where every UI lives
+./scripts/infra.sh build     # rebuild just the two service images
 ./scripts/infra.sh down      # stop, keep the data
 ./scripts/infra.sh destroy   # stop and delete every volume (asks first)
 ```
 
-First run pulls several GB and initialises Oracle from scratch, so expect a few minutes. Everything
-binds to `127.0.0.1`, and configuration lives in `docker/compose/.env`, created automatically from
-the tracked `.env.example`.
+First run pulls several GB, compiles both services and initialises Oracle from scratch, so expect
+about ten minutes. Later runs are much faster — the Maven repository lives in a BuildKit cache mount.
 
-Operational detail — network tiers, init scripts, healthcheck timings, troubleshooting — is in
-[docs/Infrastructure.md](docs/Infrastructure.md).
+Everything binds to `127.0.0.1`, and configuration lives in `docker/compose/.env`, created
+automatically from the tracked `.env.example`.
 
-## Run a service
+Published ports exist **for a person** — a browser opening Grafana, a `curl` against an API. Nothing
+in the stack talks to anything else through them: every component addresses every other by its
+compose name on `lab-net`.
 
-The infrastructure must be up first. The wrapper reads the effective ports from
-`docker/compose/.env`, so it works even when the stack has been remapped around ports already in use
-on the host:
+Operational detail — the single network and what it cost, init scripts, healthcheck timings,
+troubleshooting — is in [docs/Infrastructure.md](docs/Infrastructure.md).
+
+## Simulate load, failure and slow responses
+
+The reason the whole system is inside one network. Neither of these is possible against a service
+running on a laptop.
 
 ```bash
-./scripts/run-service.sh order-service
+./scripts/load.sh smoke                   # 1 VU — is the system wired up?
+./scripts/load.sh load                    # 10 orders/s for 5 minutes
+./scripts/load.sh stress                  # climb to 100/s until something gives
+./scripts/load.sh spike                   # idle, then 80/s in ten seconds
+./scripts/load.sh soak                    # 5/s for two hours — finds what accumulates
+
+./scripts/chaos.sh slow postgres 400      # +400ms on every database response
+./scripts/chaos.sh slow inventory-grpc 800  # a slow dependency, past its deadline
+./scripts/chaos.sh blackhole oracle       # accept connections, answer nothing
+./scripts/chaos.sh down redis             # refuse connections outright
+./scripts/chaos.sh reset                  # undo everything
 ```
 
-The Order Service starts on port 8081 with the `local` profile, applies its Flyway migrations and
-connects to PostgreSQL, Redis and Kafka.
+k6 runs **inside** the network, so it experiences the same network the services do. Toxiproxy sits in
+front of every dependency hop — including the service-to-service one — so latency and failure are
+injectable at runtime with no restart. k6 remote-writes its metrics into the same Prometheus that
+scrapes the platform, which puts a load test and its effect on one time axis.
+
+Combine them; a fault under load behaves nothing like a fault on an idle system:
+
+```bash
+./scripts/load.sh load &
+sleep 60 && ./scripts/chaos.sh slow postgres 400
+```
+
+Scenarios written out signal by signal — what each one *should* show in metrics, logs, traces and
+profiles — are in **[docs/Simulation.md](docs/Simulation.md)**.
+
+## The services
+
+Both run as containers and are started by `infra.sh up`. The Order Service is on port 8081 with the
+`dev` profile, applies its Flyway migrations, and connects to PostgreSQL, Redis and Kafka.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -240,11 +306,8 @@ connects to PostgreSQL, Redis and Kafka.
 
 ### Inventory Service
 
-```bash
-./scripts/run-service.sh inventory-service
-```
-
-Starts on port 8082 against Oracle, and consumes `order-created` from Kafka.
+Port 8082, against Oracle, consuming `order-created` from Kafka, and serving
+`inventory.v1.InventoryService` over gRPC on 9082.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -365,6 +428,7 @@ by service and environment.
 | [docs/Alerting.md](docs/Alerting.md) | Alerting: severities and what each means, the full alert matrix, Alertmanager routing, grouping and inhibition, delivery to email and webhook, and the first response to every alert |
 | [docs/Grpc.md](docs/Grpc.md) | The internal gRPC hop: the contract and codegen, the interceptor chain, discovery and client-side load balancing, deadlines, status taxonomy, retries, circuit breaking, and what all of it emits |
 | [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the eleven dashboards, and where to look by symptom |
+| [docs/Simulation.md](docs/Simulation.md) | **Load, failure and latency on demand.** The k6 scenarios, the Toxiproxy faults, and six worked scenarios stating what every signal should show |
 
 ### gRPC — the design behind step 15
 
@@ -408,7 +472,8 @@ documented before the next one starts.
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
 | 15 | Enterprise gRPC: proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
 | 16 | Alerting: 33 rules in three severities, Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
-| **17** | **Failure simulation: timeouts, leaks, CPU spikes, DLQ, gRPC chaos scenarios** | Planned |
+| — | Containerisation: both services in Docker, four networks collapsed into `lab-net`, k6 load generation and Toxiproxy fault injection | **Complete** |
+| **17** | **In-application failure simulation: memory leaks, CPU spikes, deliberate deadlocks, DLQ, exception injection** | Planned |
 | 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and

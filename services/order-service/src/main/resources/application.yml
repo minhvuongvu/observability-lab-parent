@@ -99,11 +99,16 @@ spring:
         register: true
         deregister: true
         prefer-ip-address: false
-        # The address Consul stores and health-checks back on. This service runs
-        # on the host while Consul runs in a container, so it advertises the same
-        # host.docker.internal the gateway resolves to. It becomes the compose
-        # service name once the service itself is containerised.
-        hostname: ${SERVICE_HOSTNAME:host.docker.internal}
+        # The address Consul stores, health-checks back on, and hands to anything
+        # resolving this service. Its own compose name on lab-net, where every
+        # component of the lab now runs - so one address satisfies both the
+        # registry checking it and the callers connecting to it.
+        #
+        # It was host.docker.internal while this ran as a process on the
+        # developer's machine, which satisfied only the registry: the name does
+        # not resolve on the host, so callers were handed something they could
+        # not reach. See docs/Consul.md.
+        hostname: ${SERVICE_HOSTNAME:order-service}
         health-check-path: /actuator/health
         health-check-interval: 10s
         # Only instances whose health check is passing are returned to the load
@@ -197,9 +202,11 @@ app:
   environment: local
 
   logging:
-    # Where the JSON log file is written. The shipping agents run in containers
-    # and bind-mount this directory, so it has to be a path both they and the
-    # service can see; ./scripts/run-service.sh points it at <repo>/logs.
+    # Where the JSON log file is written. Set to /var/log/lab in the container,
+    # which is the lab-logs volume that Promtail, Fluent Bit and Fluentd all
+    # mount read-only - so it has to be a path both they and the service can see.
+    # A run through ./scripts/run-service.sh writes to <repo>/logs instead, and
+    # those lines are therefore NOT shipped anywhere. See docs/Logging.md.
     directory: ${LOG_DIR:logs}
 
   security:

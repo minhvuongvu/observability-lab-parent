@@ -106,7 +106,7 @@ curl -s "$(curl -s "http://localhost:8081/api/v1/orders/${ORDER}/invoice" \
   -H "Authorization: Bearer ${TOKEN}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["url"])')"
 
 # What is actually in the bucket
-docker run --rm --network lab-data --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+docker run --rm --network lab-net --entrypoint sh minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
   "mc alias set l http://minio:9000 lab-minio-root localdev_minio_root_pw >/dev/null && mc ls --recursive l/invoices/"
 ```
 

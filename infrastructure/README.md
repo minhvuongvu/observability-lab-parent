@@ -35,12 +35,20 @@ infrastructure/
 ├── pyroscope/              continuous profiling server configuration
 ├── fluent-bit/             log shipping to the collector
 ├── fluentd/                log shipping to OpenSearch
-└── promtail/               log shipping straight to Loki
+├── promtail/               log shipping straight to Loki
+│
+│                           ── simulation ──
+├── toxiproxy/              toxiproxy.json: the seven proxies, and no toxics by default
+└── k6/                     load scenarios: smoke, load, stress, spike, soak
 ```
 
-The observability components sit at the top level rather than nested under an `observability/`
-parent: Compose names each container after its directory, and one level of nesting for a grouping
+The observability and simulation components sit at the top level rather than nested under a parent
+directory: Compose names each container after its directory, and one level of nesting for a grouping
 that only exists in prose would break that correspondence.
+
+`k6/` is the one directory that holds code rather than configuration. It earns its place here for the
+same reason as the rest: it is mounted into a container that is launched from `docker/`, and the
+scenarios are read and reviewed as configuration of what "high load" means for this system.
 
 ## Rules for anything added here
 

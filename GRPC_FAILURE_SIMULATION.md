@@ -4,8 +4,17 @@ Chaos scenarios for the gRPC hop. Each one breaks something deliberately and sta
 every signal should show** — because a resilience mechanism that has never been observed working is
 an assumption, and an alert that has never fired is untested.
 
-This extends the failure-simulation work of step 17. The endpoints and toggles here are guarded the
-same way: `local` and `dev` profiles only, `ADMIN` role required, never enabled in `prod`.
+Two kinds of injection appear below, and it is worth knowing which is which.
+
+**Available now.** Network-level faults, injected by Toxiproxy from outside the process, plus
+container-level actions. Everything runs on one Docker network, so the gRPC hop passes through a
+proxy that can be made slow, lossy or dead at runtime — see [docs/Simulation.md](docs/Simulation.md)
+and `./scripts/chaos.sh`.
+
+**Not yet built.** The in-application `/api/v1/chaos/**` endpoints, marked *(step 17)* where they
+appear. A memory leak, a deliberate deadlock or a forced status code cannot be produced from outside
+the process and need code. When they arrive they will be guarded the same way step 17's HTTP failure
+endpoints are: `local` and `dev` profiles only, `ADMIN` role required, never enabled in `prod`.
 
 ---
 
@@ -31,18 +40,21 @@ The canonical dependency failure. Everything that follows is a variation on it.
 ## Inject
 
 ```bash
-# The blunt version: stop the service entirely
-docker compose stop inventory-service     # once containerised
-# or, running on the host:
-kill $(pgrep -f inventory-service.*jar)
+# The blunt version: stop the container entirely
+docker stop lab-inventory-service        # graceful: drains, then deregisters
+docker kill lab-inventory-service        # SIGKILL: no drain, stale Consul entry until TTL
 
-# The subtler version: keep the process, refuse gRPC only
+# The subtler version: keep the process, break only the gRPC path
+./scripts/chaos.sh down inventory-grpc
+
+# Forcing a specific status code from the handler:
 curl -X POST localhost:8082/api/v1/chaos/grpc/reject \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"status":"UNAVAILABLE","ratio":1.0}'
+  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"status":"UNAVAILABLE","ratio":1.0}'   # (step 17)
 ```
 
-The second form matters: it keeps the HTTP health check green while gRPC fails, which is a real and
-nastier failure than a dead process.
+The second form matters most: the HTTP health check stays green while gRPC fails, which is a real and
+nastier failure than a dead process. Toxiproxy gives it today because the two hops are separate
+proxies — `inventory-http` and `inventory-grpc` — and breaking one leaves the other untouched.
 
 ## Expected
 
@@ -95,14 +107,22 @@ More dangerous than an outage. An outage fails fast; slowness consumes resources
 ## Inject
 
 ```bash
-# 800ms added latency on every gRPC handler — well past the 300ms deadline
-curl -X POST localhost:8082/api/v1/chaos/grpc/latency \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"delayMs":800,"ratio":1.0}'
+# 800ms added latency on the gRPC hop — well past the 300ms deadline
+./scripts/chaos.sh slow inventory-grpc 800
 
-# The realistic version: only some calls, so averages stay deceptively healthy
+# The realistic version: heavy jitter, so averages stay deceptively healthy while
+# the tail breaches the deadline
+./scripts/chaos.sh slow inventory-grpc 100 700
+
+# Injected inside the handler instead, which also lets the ratio be set exactly:
 curl -X POST localhost:8082/api/v1/chaos/grpc/latency \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"delayMs":800,"ratio":0.1}'
+  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"delayMs":800,"ratio":0.1}'   # (step 17)
 ```
+
+The two are not equivalent, and the difference is instructive. Toxiproxy delays the bytes, so the
+server handler is fast and the *client* sees the latency. The in-handler version makes the server
+genuinely slow, so its own span is long. Compare the traces: only the second produces a server span
+longer than its parent.
 
 ## Expected
 
@@ -147,12 +167,20 @@ Saturation, and the specific way gRPC saturation hides.
 ## Inject
 
 ```bash
-# 500 concurrent streams, 60s, 50-line batches
+# Through the real order path, which is what actually drives the gRPC hop:
+./scripts/load.sh stress          # climbs to 800 orders/s
+PEAK=2000 ./scripts/load.sh stress
+
+# Or straight at the gRPC server with ghz, for a pure protocol-level view:
 ghz --insecure --proto proto/inventory/v1/inventory_service.proto \
     --call inventory.v1.InventoryService/BatchCheckStock \
     -d '{"items":[{"product_sku":"SKU-1","requested_quantity":1}, ...]}' \
     -c 500 -z 60s localhost:9082
 ```
+
+Prefer the first. `POST /api/v1/orders/availability` reaches `BatchCheckStock` through the whole
+client stack — deadline, retry policy, circuit breaker, Consul-resolved channel — and it is that
+stack, not the server in isolation, that the scenarios below make claims about.
 
 ## Expected
 
@@ -204,10 +232,17 @@ Configure a gRPC client **without** a deadline:
 
 ```bash
 curl -X POST localhost:8081/api/v1/chaos/grpc/no-deadline \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"enabled":true}'
+  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"enabled":true}'   # (step 17)
 ```
 
-Then apply Scenario 2's latency.
+Until that endpoint exists, set `check-stock-deadline` and `batch-check-deadline` to something
+absurd — `600s` — in `docker/compose/docker-compose.services.yml` and restart the one service:
+
+```bash
+docker compose --project-directory docker/compose up -d order-service
+```
+
+Then apply Scenario 2's latency: `./scripts/chaos.sh slow inventory-grpc 800`.
 
 ## Expected
 
@@ -292,8 +327,20 @@ Set the channel policy to `pick_first` (the gRPC default) with two Inventory ins
 
 ```bash
 curl -X POST localhost:8081/api/v1/chaos/grpc/lb-policy \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"policy":"pick_first"}'
+  -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"policy":"pick_first"}'   # (step 17)
 ```
+
+Two instances are now a `--scale` away, which is the part that used to be hard:
+
+```bash
+# Remove `container_name` from inventory-service first - three containers cannot share one name.
+docker compose --project-directory docker/compose up -d --scale inventory-service=3
+```
+
+Both register in Consul under the same service id, and the channel should spread RPCs across them.
+Worth verifying rather than assuming: a gRPC channel multiplexes every RPC over one HTTP/2
+connection, so anything balancing at layer 4 pins all traffic to a single instance — which is the
+failure this scenario is about.
 
 ## Expected
 
@@ -386,11 +433,21 @@ between an investigation and a guess:
 # Running the suite
 
 ```bash
-./scripts/chaos.sh grpc --scenario 1     # one scenario
-./scripts/chaos.sh grpc --all            # the suite, sequentially, with cool-down
-./scripts/chaos.sh reset                 # clear every injected fault
+./scripts/chaos.sh list                       # proxies and active toxics
+./scripts/chaos.sh slow inventory-grpc 800    # scenario 2
+./scripts/chaos.sh down inventory-grpc        # scenario 1
+./scripts/chaos.sh reset                      # clear every injected fault
 ```
 
-Every toggle is guarded by profile (`local`, `dev`) and by the `ADMIN` role, and is disabled under
-`prod` — the same guard step 17's HTTP failure endpoints use. A chaos endpoint reachable in
-production is not a learning tool; it is a vulnerability.
+Run them under load rather than on an idle system. A fault on an idle system tells you what the
+mechanism does; a fault under load tells you what it does when it matters, and the two are not the
+same — see scenario 6 of [docs/Simulation.md](docs/Simulation.md) for how sharply that diverges.
+
+```bash
+./scripts/load.sh load &
+sleep 60 && ./scripts/chaos.sh slow inventory-grpc 800
+```
+
+The in-application toggles marked *(step 17)* do not exist yet. When they do, every one will be
+guarded by profile (`local`, `dev`) and by the `ADMIN` role, and disabled under `prod`. A chaos
+endpoint reachable in production is not a learning tool; it is a vulnerability.
