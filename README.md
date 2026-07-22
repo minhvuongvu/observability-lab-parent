@@ -411,6 +411,43 @@ by service and environment.
 
 ## Documentation
 
+Two layers. **Reference** is organised by subsystem and read by lookup — *"what is Loki configured to
+do?"*. Guides organised by task, read in order at a keyboard, are step 19.
+
+### Start here
+
+| If you want to | Read |
+| --- | --- |
+| Understand the system | [docs/Architecture.md](docs/Architecture.md) → [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) |
+| See what happens on one request | [docs/SequenceDiagrams.md](docs/SequenceDiagrams.md) |
+| See what runs where | [docs/InfrastructureDiagram.md](docs/InfrastructureDiagram.md) |
+| Bring it up | [docs/Deployment.md](docs/Deployment.md) |
+| Operate it | [docs/Runbook.md](docs/Runbook.md) |
+| Fix it | [docs/Troubleshooting.md](docs/Troubleshooting.md) |
+| Measure it | [docs/Performance.md](docs/Performance.md) |
+| Know what protects what | [docs/Security.md](docs/Security.md) |
+| Find the signal for a symptom | [docs/Observability.md](docs/Observability.md) |
+| Break it on purpose | [docs/Simulation.md](docs/Simulation.md), [docs/FailureSimulation.md](docs/FailureSimulation.md) |
+
+### Operations
+
+| Document | Contents |
+| --- | --- |
+| [docs/Deployment.md](docs/Deployment.md) | What a deployment is, prerequisites, the configuration surface, startup ordering, verification, redeploy and rollback, and what this deployment is deliberately not |
+| [docs/Runbook.md](docs/Runbook.md) | Procedures: service lifecycle, per-component operations, incident procedures, data procedures, running an experiment, change procedures, and how to prove the system is healthy again |
+| [docs/Troubleshooting.md](docs/Troubleshooting.md) | Symptom → cause → check → fix, across startup, auth, addressing, the data layer, messaging, the telemetry pipelines and the simulation stack — plus the signals that mislead |
+| [docs/Performance.md](docs/Performance.md) | The measured ceiling, the latency budget, what runs out first, how to measure honestly, the tuning playbook, the cost of observing, and what not to conclude |
+| [docs/Security.md](docs/Security.md) | The layered controls, identity, double token verification, the authorization matrix, the header trust model, credentials, container hardening — and what is deliberately not secured |
+
+### Design and diagrams
+
+| Document | Contents |
+| --- | --- |
+| [docs/SequenceDiagrams.md](docs/SequenceDiagrams.md) | Fifteen worked flows: the order lifecycle with its transaction phases, the express reservation race, retry and dead letter, startup, one request across four signals, fault injection, and alert delivery |
+| [docs/InfrastructureDiagram.md](docs/InfrastructureDiagram.md) | The static map: the whole system on one network, compose-file ownership, published ports versus in-network addresses, the fault-injection topology, the startup graph, the four telemetry pipelines, volumes and the resource budget |
+
+### Reference, by subsystem
+
 | Document | Contents |
 | --- | --- |
 | [docs/Architecture.md](docs/Architecture.md) | Design principles, system context, runtime topology, communication patterns, observability architecture, decision log |
@@ -444,9 +481,13 @@ by service and environment.
 | [GRPC_ERROR_HANDLING.md](GRPC_ERROR_HANDLING.md) | Status-code taxonomy, deadlines, retries, circuit breaking, load balancing |
 | [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md) | Seven chaos scenarios, with the expected signal-by-signal response for each |
 
-Deployment, Gateway, Runbook, Troubleshooting, Performance and Security guides are produced by the
-steps that introduce each capability, and consolidated in step 18. The alert guide, alert matrix
-and incident-response notes are in [docs/Alerting.md](docs/Alerting.md).
+The reference layer above is complete as of step 18. What is still owed is the **task** layer — getting
+started, day-to-day operations, the configuration walkthrough, debugging investigations and graded
+exercises — which is step 19. The two are not the same document written twice: step 18 is read by
+lookup, step 19 is read in order at a keyboard.
+
+The alert guide, alert matrix and per-alert first response are in [docs/Alerting.md](docs/Alerting.md);
+the runbook deliberately does not repeat them.
 
 ---
 
@@ -475,7 +516,7 @@ documented before the next one starts.
 | 16 | Alerting: 33 rules in three severities, Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into `lab-net`, k6 load generation and Toxiproxy fault injection | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints guarded three ways, a scenario runner, and 13 documented scenarios. Found and fixed a dead-letter path that could never publish | **Complete** |
-| 18 | Reference documentation: deployment guide, runbook, troubleshooting, performance, security, sequence diagrams, final README | Planned |
+| 18 | Reference documentation: deployment, runbook, troubleshooting, performance and security guides, sequence diagrams, infrastructure diagram, final README | **Complete** |
 | **19** | **Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises** | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and

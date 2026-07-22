@@ -74,13 +74,53 @@ require_api() {
        Start the stack first: ./scripts/infra.sh up"
 }
 
+# Resolves a Python that actually runs, printing nothing when there is none.
+#
+# `command -v python3` is not sufficient, and the way it fails is silent. Windows
+# ships an App Execution Alias at WindowsApps/python3 which exists and resolves,
+# then refuses to run: it prints "Python was not found; run without arguments to
+# install from the Microsoft Store" and exits non-zero. A presence check picks
+# that stub over the real interpreter - which on a Windows box is normally called
+# `python` - so every JSON reader below fails while `command -v` says it should
+# have worked.
+#
+# Executing the candidate is the only probe that distinguishes the two.
+python_bin() {
+  local candidate
+  for candidate in python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1 \
+       && "${candidate}" -c 'import json,sys' >/dev/null 2>&1; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# Removes carriage returns from a name list.
+#
+# Not paranoia. Python's stdout is a text stream, so on Windows `print()`
+# translates "\n" into "\r\n" - which means every proxy name parsed below arrives
+# with a trailing \r. It is invisible in output and fatal in a URL: the request
+# becomes ".../proxies/inventory-grpc\r/toxics" and curl rejects it with
+# "URL using bad/illegal format", after which `reset` reports "no such proxy" for
+# a proxy that plainly exists.
+#
+# Applied to every reader rather than only the Python one, so a CRLF arriving
+# from any source cannot resurrect this. The repository hit the same class of bug
+# once before, in a generator that had to be told newline="\n" explicitly.
+strip_cr() { tr -d '\r'; }
+
 # Toxiproxy answers JSON. jq is not assumed - it is not installed by default on
-# macOS - so every reader here is a fallback chain rather than a dependency.
+# macOS or on Git Bash - so every reader here is a fallback chain rather than a
+# dependency.
 pretty() {
+  local py
+  py="$(python_bin)"
   if command -v jq >/dev/null 2>&1; then
     jq .
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -m json.tool
+  elif [ -n "${py}" ]; then
+    "${py}" -m json.tool
   else
     cat
   fi
@@ -95,17 +135,18 @@ pretty() {
 # proxy: blackhole" precisely when something is broken and you most want it to
 # work.
 proxy_names() {
-  local json
+  local json py
   json="$(curl -fsS "${API}/proxies")" || return 1
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "${json}" | python3 -c 'import sys,json; print("\n".join(json.load(sys.stdin)))'
+  py="$(python_bin)"
+  if [ -n "${py}" ]; then
+    printf '%s' "${json}" | "${py}" -c 'import sys,json; print("\n".join(json.load(sys.stdin)))' | strip_cr
   elif command -v jq >/dev/null 2>&1; then
-    printf '%s' "${json}" | jq -r 'keys[]'
+    printf '%s' "${json}" | jq -r 'keys[]' | strip_cr
   else
     # Last resort: the seed file the proxies were created from. Only wrong if a
     # proxy was added through the API by hand, which nothing here does.
     sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-      "${REPO_ROOT}/infrastructure/toxiproxy/toxiproxy.json"
+      "${REPO_ROOT}/infrastructure/toxiproxy/toxiproxy.json" | strip_cr
   fi
 }
 
@@ -113,14 +154,15 @@ proxy_names() {
 # flat array, so there is nothing to confuse it with - but it uses the same
 # readers for consistency.
 toxic_names() {
-  local json
+  local json py
   json="$(curl -fsS "${API}/proxies/$1/toxics")" || return 1
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "${json}" | python3 -c 'import sys,json; print("\n".join(t["name"] for t in json.load(sys.stdin)))'
+  py="$(python_bin)"
+  if [ -n "${py}" ]; then
+    printf '%s' "${json}" | "${py}" -c 'import sys,json; print("\n".join(t["name"] for t in json.load(sys.stdin)))' | strip_cr
   elif command -v jq >/dev/null 2>&1; then
-    printf '%s' "${json}" | jq -r '.[].name'
+    printf '%s' "${json}" | jq -r '.[].name' | strip_cr
   else
-    printf '%s' "${json}" | grep -o '"name":"[^"]*"' | sed 's/.*:"//;s/"$//'
+    printf '%s' "${json}" | grep -o '"name":"[^"]*"' | sed 's/.*:"//;s/"$//' | strip_cr
   fi
 }
 

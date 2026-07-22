@@ -3,10 +3,14 @@
 # Runs a k6 load scenario from inside the Docker network.
 #
 #   ./scripts/load.sh smoke      1 VU, 1 minute - is the system wired up?
-#   ./scripts/load.sh load       ramp to 50 orders/s and hold
-#   ./scripts/load.sh stress     climb to 800/s until something gives
-#   ./scripts/load.sh spike      idle, then 500/s in ten seconds, then idle
-#   ./scripts/load.sh soak       20/s for two hours - finds what accumulates
+#   ./scripts/load.sh load       ramp to 10 orders/s and hold for 5 minutes
+#   ./scripts/load.sh stress     climb to 100/s until something gives
+#   ./scripts/load.sh spike      idle, then 80/s in ten seconds, then idle
+#   ./scripts/load.sh soak       5/s for two hours - finds what accumulates
+#
+# Those defaults are MEASURED, not chosen: the lab saturates at around 10
+# orders/s against a 10-connection pool and a 1.5-CPU limit. Raising a limit
+# invalidates them - see docs/Performance.md.
 #
 # Every scenario takes environment overrides:
 #

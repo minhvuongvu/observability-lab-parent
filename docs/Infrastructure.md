@@ -389,7 +389,7 @@ This step brings the components up. It does not configure what they do:
 | Step 07 | Keycloak realm, clients, roles, users; the JWT plugin starts enforcing |
 | Step 08 | Consul service registration and KV configuration |
 | Step 10–13 | The entire observability stack |
-| — | Nothing. Step 17 completed the failure-simulation surface: network faults in [Simulation.md](Simulation.md), in-process faults in [FailureSimulation.md](FailureSimulation.md). Step 18 consolidates the documentation |
+| — | Nothing. Step 17 completed the failure-simulation surface: network faults in [Simulation.md](Simulation.md), in-process faults in [FailureSimulation.md](FailureSimulation.md). Step 18 completed the reference layer — [Deployment.md](Deployment.md), [Runbook.md](Runbook.md), [Troubleshooting.md](Troubleshooting.md), [Performance.md](Performance.md), [Security.md](Security.md), [SequenceDiagrams.md](SequenceDiagrams.md), [InfrastructureDiagram.md](InfrastructureDiagram.md) |
 
 ---
 

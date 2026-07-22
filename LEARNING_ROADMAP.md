@@ -30,7 +30,7 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 16 | Alerting: rule categories, routing to email and webhook, exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into one, k6 load generation, Toxiproxy fault injection — [Simulation.md](docs/Simulation.md) | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints, a scenario runner, 13 documented scenarios — [FailureSimulation.md](docs/FailureSimulation.md) | **Complete** |
-| 18 | Reference documentation: deployment guide, runbook, troubleshooting, performance, security, diagrams | Planned |
+| 18 | Reference documentation: deployment, runbook, troubleshooting, performance, security, sequence and infrastructure diagrams | **Complete** |
 | **19** | **Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises** | Planned |
 
 > **Numbering note.** Two steps have been inserted since the original plan, and everything after each
@@ -281,6 +281,86 @@ You have understood this step when you can:
 
 ---
 
+## Step 18 — Reference Documentation
+
+### Why here
+
+Everything is built. Nothing that follows adds a capability, so this is the last point at which the
+documentation can describe a finished system rather than a moving one.
+
+It is also a **dependency of step 19**. A debugging walkthrough points at the metrics and tracing
+references; a getting-started guide points at the deployment guide for what a prerequisite is actually
+for. Writing the task layer first means writing against documents that do not exist.
+
+### The organising principle
+
+Step 18 organises by **subsystem** and is read by lookup:
+
+> "What is Loki configured to do?"
+
+Step 19 organises by **task** and is read in order, at a keyboard:
+
+> "An order is stuck PENDING. Where do I look?"
+
+Different organising principle, different reading mode. A reader who wants one is badly served by the
+other, and a document that tries to be both is worse than either.
+
+### Deliverables
+
+| Artefact | Content |
+| --- | --- |
+| `docs/Deployment.md` | What a deployment is, prerequisites, the configuration surface and what must change together, startup ordering, verification, redeploy and rollback, and what this deployment is deliberately not |
+| `docs/Runbook.md` | Procedures: the five pre-checks, service lifecycle, per-component operations, six incident procedures, data procedures, experiment protocol, change procedures, and how to prove the system healthy again |
+| `docs/Troubleshooting.md` | Symptom → cause → check → fix, across startup, auth, addressing, data, messaging, the four telemetry pipelines, the simulation stack and the build — plus the signals that mislead |
+| `docs/Performance.md` | The measured ceiling, the latency budget chain, what runs out first, the measurement protocol, the tuning playbook, the cost of observing, and what not to conclude |
+| `docs/Security.md` | The layered controls, identity and the issuer trap, double token verification, the authorization matrix, the header trust model, credentials and least privilege, container hardening, and what is deliberately not secured |
+| `docs/SequenceDiagrams.md` | Fifteen worked flows, each with what to notice: transaction phases in the order lifecycle, the express reservation race, retry and dead letter, startup coupling, one request across four signals, fault injection, circuit breaker states, alert delivery, log shipping |
+| `docs/InfrastructureDiagram.md` | The static map: the whole system on one network, compose-file ownership, published ports versus in-network addresses, the fault-injection topology, the startup graph, telemetry pipelines, volumes, the resource budget, and what the single network cost |
+| Final `README.md` | Restructured documentation index: start-here table, operations, diagrams, reference by subsystem |
+
+### What writing it found
+
+Documentation that is written against the files rather than from memory finds things. This step found
+three:
+
+1. **`retry-topic` is created and never used.** `kafka-init` declares it; no code and no configuration
+   references it. Retries are in-process (`FixedBackOff`, 3 attempts, 1 s) and go straight to the
+   dead-letter topic. Recorded rather than quietly fixed, because an empty topic that looks like a
+   broken pipeline is exactly the kind of thing a reader needs told.
+2. **`scripts/load.sh`'s header disagreed with its own scenarios** — it advertised 50/800/500/20 where
+   the k6 files default to 10/100/80/5. Fixed, because the true numbers are *measured* and the stale
+   ones would have sent a reader chasing a system that does not exist.
+3. **The sum of the memory limits is 15.6 GB**, against a documented 10 GB requirement. Both are correct
+   — limits are ceilings, not reservations — but the gap is worth stating rather than leaving a reader
+   to discover it during a stress run.
+
+### Exercises, in order
+
+1. **Take one claim from each new document and verify it against the file it describes.** Any that
+   fails is a bug in the document, not in the reader.
+2. **Follow the deployment verification list on a cold stack** and note which step fails first when you
+   deliberately skip `chaos.sh reset`.
+3. **Pick a symptom you have actually hit** and check whether the troubleshooting guide reaches it in
+   under three lookups. If not, that is the gap to write.
+4. **Trace the create-order sequence diagram against the code**, and find where the transaction phase
+   matters. Change `BEFORE_COMMIT` to `AFTER_COMMIT` on the outbox listener and reason about what
+   breaks before running it.
+5. **Read the security guide's §12 and count how many gaps you would have assumed were covered.**
+
+### Assessment
+
+You have understood this step when you can:
+
+- Say which document answers a given question without opening any of them
+- Explain why the published-port versus in-network-address distinction is the one rule that resolves
+  most confusion in this stack
+- State the latency budget chain from Nginx to the Oracle query, and the rule that orders it
+- Name the binding constraint on throughput, and prove it with one metric
+- List three things this deployment is not, and what each would cost in production
+- Explain why a document organised by subsystem cannot also serve a reader at a keyboard
+
+---
+
 ## What each step teaches
 
 | Step | Core concept | Signature lesson |
@@ -299,7 +379,7 @@ You have understood this step when you can:
 | **15** | **gRPC** | **Protocol choice follows coupling; some failures are invisible to all four signals** |
 | 16 | Alerting | Alert on symptoms a person would act on; an ignored channel is worse than none |
 | 17 | Failure simulation | A resilience mechanism never observed working is an assumption |
-| 18 | Documentation | Explain *why*; a decision without a rationale is folklore |
+| 18 | Documentation | Explain *why*; a decision without a rationale is folklore. Say what is **not** true, or a lab simplification gets copied into production |
 
 ---
 
@@ -309,8 +389,19 @@ You have understood this step when you can:
 
 1. [README.md](README.md)
 2. [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)
-3. [docs/Observability.md](docs/Observability.md)
-4. [docs/Architecture.md](docs/Architecture.md)
+3. [docs/InfrastructureDiagram.md](docs/InfrastructureDiagram.md) — what runs where
+4. [docs/SequenceDiagrams.md](docs/SequenceDiagrams.md) — what moves through it
+5. [docs/Observability.md](docs/Observability.md)
+6. [docs/Architecture.md](docs/Architecture.md)
+
+**Operating it** — the reference layer, in the order you will need it:
+
+1. [docs/Deployment.md](docs/Deployment.md) — bring it up, and know what it is not
+2. [docs/InfrastructureDiagram.md](docs/InfrastructureDiagram.md) — the map
+3. [docs/Runbook.md](docs/Runbook.md) — procedures
+4. [docs/Troubleshooting.md](docs/Troubleshooting.md) — when it is not yet clear what is wrong
+5. [docs/Performance.md](docs/Performance.md) — measuring honestly
+6. [docs/Security.md](docs/Security.md) — what protects what, and what does not
 
 **Studying communication:**
 
@@ -338,3 +429,8 @@ You have understood this step when you can:
 | Retries without causing an outage? | [GRPC_ERROR_HANDLING.md §3](GRPC_ERROR_HANDLING.md#3-retries) |
 | What would you alert on? | [docs/Metrics.md §6](docs/Metrics.md), [GRPC_OBSERVABILITY.md §2.5](GRPC_OBSERVABILITY.md#25-alerts) |
 | How do you know your observability is sufficient? | [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md), the coverage matrix |
+| What is your capacity, and what binds it? | [docs/Performance.md §2 and §5](docs/Performance.md#5-what-runs-out-first) |
+| How do you set timeouts across a call chain? | [docs/Performance.md §3](docs/Performance.md#3-the-latency-budget) — a callee's budget must be smaller than its caller's |
+| Where do you enforce authorization, edge or service? | [docs/Security.md §4–5](docs/Security.md#4-token-verification-twice) — both, independently |
+| What would you fix first before exposing this? | [docs/Security.md §12](docs/Security.md#12-what-is-deliberately-not-secured) |
+| How do you deploy and roll back? | [docs/Deployment.md §11](docs/Deployment.md#11-redeploy-rollback-and-teardown) — including why a migration cannot be |

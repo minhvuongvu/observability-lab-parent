@@ -366,6 +366,8 @@ This document describes the target. What is actually built and running:
 | **Alerting** | 33 Prometheus rules across three severities and five categories, routed by Alertmanager with grouping and inhibition, delivered to email and webhook; two Grafana rules for the log-based signals; five exporters for host, both databases, Redis and Kafka |
 | **gRPC** | `inventory.v1.InventoryService` on port 9082: unary, server-streaming and client-streaming RPCs, generated from one `.proto` into both sides. Deadlines, status mapping, retries with a budget, a circuit breaker, and client-side balancing through Consul |
 | **Circuit breakers** | Around the gRPC hop, tripping on slow calls as well as errors, with a defined fallback per call |
+| **Failure simulation** | Network faults through Toxiproxy on every dependency hop, 14 in-process chaos endpoints guarded three ways, a scenario runner, and 13 scenarios with expectations written before the run |
+| **Reference documentation** | Deployment, runbook, troubleshooting, performance and security guides, plus [SequenceDiagrams.md](SequenceDiagrams.md) and [InfrastructureDiagram.md](InfrastructureDiagram.md) |
 
 Described above but not yet built:
 
@@ -373,8 +375,8 @@ Described above but not yet built:
 | --- | --- |
 | **TLS at the edge.** Nginx serves plain HTTP. Every port binds to `127.0.0.1`, so TLS would encrypt a loopback hop while adding certificate handling that obscures gateway behaviour. A deployment reachable from elsewhere terminates TLS at Nginx. | Deliberate for a single-host lab |
 | **mTLS between services.** The gRPC hop is plaintext, like every other hop here. A real deployment authenticates both ends, which is where a service mesh would take over. | Deliberate for a single-host lab |
-| **`buf lint` and `buf breaking` in CI.** ADR-17. The contract rules are enforced by review today; a wire-incompatible change is invisible to all four signals, so it needs a machine. | Step 18 |
-| **Failure-simulation endpoints.** Including the seven gRPC chaos scenarios. | Step 17 |
-| **Runbook and consolidated guides.** | Step 18 |
+| **`buf lint` and `buf breaking` in CI.** ADR-17. The contract rules are enforced by review today; a wire-incompatible change is invisible to all four signals, so it needs a machine. | **Still owed.** No step claims it — there is no CI pipeline in this repository at all, which is the honest reason rather than the scheduled one |
+| **Backups and a tested restore.** No volume is backed up and no restore has been performed. | Deliberate for a lab, and the first gap to close anywhere else — [Deployment.md §12](Deployment.md#12-what-this-deployment-is-not) |
+| **Down-migrations.** Flyway runs forward only, so the rollback for a bad migration is `destroy`. | Deliberate for a lab |
 
 See [LEARNING_ROADMAP.md](../LEARNING_ROADMAP.md) for the full step table.
