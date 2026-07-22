@@ -413,6 +413,13 @@ Lab-scale, chosen to be observable on one host rather than to be impressive.
 | Log retention (Loki / OpenSearch) | 7 days |
 | Metric retention (Prometheus / VictoriaMetrics) | 15 days / 90 days |
 
+> **These two retention rows are targets that the shipped configuration does not meet.** Verified
+> against the running stack: Prometheus is started with `--storage.tsdb.retention.time=24h` (one day,
+> not fifteen) and VictoriaMetrics with `--retentionPeriod=30d` (thirty days, not ninety). Loki's
+> 7 days is real. The gap is recorded rather than silently corrected because the numbers above are
+> what the design asks for; the compose flags are what a laptop was given.
+> [Configuration.md](Configuration.md) documents the effective values and what raising them costs.
+
 ## 12. Current state
 
 Step 01 delivers the build topology in section 1, the configuration strategy and service identity in

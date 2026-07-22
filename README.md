@@ -411,23 +411,43 @@ by service and environment.
 
 ## Documentation
 
-Two layers. **Reference** is organised by subsystem and read by lookup — *"what is Loki configured to
-do?"*. Guides organised by task, read in order at a keyboard, are step 19.
+Two layers, and the difference is the reading mode.
+
+**Guides** are organised by **task** and read in order, at a keyboard — *"an order is stuck PENDING,
+where do I look?"*. **Reference** is organised by **subsystem** and read by lookup — *"what is Loki
+configured to do?"*. A reader who wants one is badly served by the other.
 
 ### Start here
 
+**New to this lab? → [GETTING_STARTED.md](GETTING_STARTED.md)** — empty clone to a confirmed order in
+about ten minutes.
+
 | If you want to | Read |
 | --- | --- |
+| Get it running for the first time | [GETTING_STARTED.md](GETTING_STARTED.md) |
+| Run it day to day | [docs/Operations.md](docs/Operations.md) |
+| Know which knob does what | [docs/Configuration.md](docs/Configuration.md) |
+| **Find the cause of something** | **[docs/Debugging.md](docs/Debugging.md)** |
+| Practise, with checkable answers | [docs/Exercises.md](docs/Exercises.md) |
 | Understand the system | [docs/Architecture.md](docs/Architecture.md) → [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md) |
 | See what happens on one request | [docs/SequenceDiagrams.md](docs/SequenceDiagrams.md) |
 | See what runs where | [docs/InfrastructureDiagram.md](docs/InfrastructureDiagram.md) |
-| Bring it up | [docs/Deployment.md](docs/Deployment.md) |
-| Operate it | [docs/Runbook.md](docs/Runbook.md) |
-| Fix it | [docs/Troubleshooting.md](docs/Troubleshooting.md) |
+| Deploy or roll back | [docs/Deployment.md](docs/Deployment.md) |
+| Act on an alert | [docs/Runbook.md](docs/Runbook.md), [docs/Alerting.md](docs/Alerting.md) |
+| Fix something broken | [docs/Troubleshooting.md](docs/Troubleshooting.md) |
 | Measure it | [docs/Performance.md](docs/Performance.md) |
 | Know what protects what | [docs/Security.md](docs/Security.md) |
-| Find the signal for a symptom | [docs/Observability.md](docs/Observability.md) |
 | Break it on purpose | [docs/Simulation.md](docs/Simulation.md), [docs/FailureSimulation.md](docs/FailureSimulation.md) |
+
+### Learning guides — read in order, at a keyboard
+
+| Document | Contents |
+| --- | --- |
+| [GETTING_STARTED.md](GETTING_STARTED.md) | Empty clone to a working stack; what each prerequisite is for; what "it worked" looks like at every stage; the first order end to end and where to watch it in Grafana; the three things most likely to go wrong |
+| [docs/Operations.md](docs/Operations.md) | The lifecycle, restarting and rebuilding one service, reading health correctly, where the logs are per component, scaling and what breaks when you do, disk and volume cleanup, and the gotchas that only show up once |
+| [docs/Configuration.md](docs/Configuration.md) | Every knob that matters and what moves when it does; published port versus in-network address; the load-bearing values; retention, TTLs and sampling with their real measured values; what must change together |
+| [docs/Debugging.md](docs/Debugging.md) | **The centrepiece.** Symptom → signal → tool → query; four investigations worked start to finish from real measurements, each naming the wrong turn as well as the right one; how to pivot metric → trace → log → profile; what each tool is bad at |
+| [docs/Exercises.md](docs/Exercises.md) | Six graded levels, each posing a question with a checkable answer — a number, a query or a diagnosis. Solutions in a separate section |
 
 ### Operations
 
@@ -481,13 +501,10 @@ do?"*. Guides organised by task, read in order at a keyboard, are step 19.
 | [GRPC_ERROR_HANDLING.md](GRPC_ERROR_HANDLING.md) | Status-code taxonomy, deadlines, retries, circuit breaking, load balancing |
 | [GRPC_FAILURE_SIMULATION.md](GRPC_FAILURE_SIMULATION.md) | Seven chaos scenarios, with the expected signal-by-signal response for each |
 
-The reference layer above is complete as of step 18. What is still owed is the **task** layer — getting
-started, day-to-day operations, the configuration walkthrough, debugging investigations and graded
-exercises — which is step 19. The two are not the same document written twice: step 18 is read by
-lookup, step 19 is read in order at a keyboard.
-
-The alert guide, alert matrix and per-alert first response are in [docs/Alerting.md](docs/Alerting.md);
-the runbook deliberately does not repeat them.
+Both layers are complete as of step 19. The alert guide, alert matrix and per-alert first response are
+in [docs/Alerting.md](docs/Alerting.md); the runbook deliberately does not repeat them, and the
+learning guides route to [docs/Simulation.md](docs/Simulation.md) and
+[docs/FailureSimulation.md](docs/FailureSimulation.md) rather than restating their scenarios.
 
 ---
 
@@ -517,7 +534,7 @@ documented before the next one starts.
 | — | Containerisation: both services in Docker, four networks collapsed into `lab-net`, k6 load generation and Toxiproxy fault injection | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints guarded three ways, a scenario runner, and 13 documented scenarios. Found and fixed a dead-letter path that could never publish | **Complete** |
 | 18 | Reference documentation: deployment, runbook, troubleshooting, performance and security guides, sequence diagrams, infrastructure diagram, final README | **Complete** |
-| **19** | **Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises** | Planned |
+| 19 | Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises — every command verified against a running stack | **Complete** |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 `PROMPT_MICROSERVICE_OBSERVABILITY_STEPS.md` (the order to build it in).

@@ -346,8 +346,24 @@ does not state its targets is a collection of numbers.
 | Graceful shutdown | ≤ 30 s (Order), ≤ 45 s (Inventory, to finish the current batch) |
 | Trace sampling | 100% in `local` and `dev` |
 | Metric scrape interval | 15 s (10 s for the services) |
-| Log retention (Loki / OpenSearch) | 7 days |
-| Metric retention (Prometheus / VictoriaMetrics) | 15 days / 90 days |
+
+### Retention — the targets and what actually ships
+
+[SystemDesign.md §11](SystemDesign.md#11-non-functional-targets) states retention as a *target*. The
+shipped configuration is more conservative, and the gap is large enough to matter when you go looking
+for yesterday's incident:
+
+| Signal | Target | **Actually configured** | Where |
+| --- | --- | --- | --- |
+| Logs — Loki | 7 days | **7 days** (`retention_period: 168h`) | `infrastructure/loki/loki.yml` |
+| Traces — Tempo | — | **7 days** (`block_retention: 168h`) | `infrastructure/tempo/tempo.yml` |
+| Metrics — Prometheus | 15 days | **1 day** (`--storage.tsdb.retention.time=24h`) | compose |
+| Metrics — VictoriaMetrics | 90 days | **30 days** (`--retentionPeriod=30d`) | compose |
+
+Verified live against `/api/v1/status/flags`. **Prometheus keeps one day**, which is why
+VictoriaMetrics receives a `remote_write` copy of every sample — a comparison across last week's runs
+has to be made there, not in Prometheus. Raising Prometheus' retention is a legitimate change; it
+costs disk in `lab-prometheus-data` and nothing else.
 
 The batch stock check row is the one measured improvement in the system rather than a chosen target: it
 came from a real N+1 defect in the REST path, and the justification is in

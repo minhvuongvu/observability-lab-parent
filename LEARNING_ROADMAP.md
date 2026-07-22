@@ -31,7 +31,7 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | — | Containerisation: both services in Docker, four networks collapsed into one, k6 load generation, Toxiproxy fault injection — [Simulation.md](docs/Simulation.md) | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints, a scenario runner, 13 documented scenarios — [FailureSimulation.md](docs/FailureSimulation.md) | **Complete** |
 | 18 | Reference documentation: deployment, runbook, troubleshooting, performance, security, sequence and infrastructure diagrams | **Complete** |
-| **19** | **Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises** | Planned |
+| 19 | Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises | **Complete** |
 
 > **Numbering note.** Two steps have been inserted since the original plan, and everything after each
 > shifted rather than being dropped.
@@ -361,6 +361,76 @@ You have understood this step when you can:
 
 ---
 
+## Step 19 — Learning and Practice Guides
+
+### Why here, and why last
+
+This lab exists to be **learned from**, not merely to run. Steps 1–18 document the system; this step
+documents how to *work with* it — bring it up, operate it, change it safely, break it deliberately,
+and find the cause using the tools.
+
+It is last because step 18 is a **dependency**. A debugging walkthrough points at the metrics and
+tracing references; a getting-started guide points at the deployment guide for what a prerequisite is
+actually for. Writing the task layer first means writing against documents that do not exist.
+
+### The organising principle, restated
+
+| | Step 18 | Step 19 |
+| --- | --- | --- |
+| Organised by | Subsystem | Task |
+| Read by | Lookup | In order, at a keyboard |
+| Answers | "What is Loki configured to do?" | "An order is stuck PENDING. Where do I look?" |
+
+### Deliverables
+
+| Artefact | Content |
+| --- | --- |
+| `GETTING_STARTED.md` | Empty clone → working stack → a confirmed order → where to watch it in Grafana. What each prerequisite is *for*, what "it worked" looks like at every stage, and the three things most likely to go wrong on a first run |
+| `docs/Operations.md` | Lifecycle, restarting and rebuilding one service, reading health correctly, logs per component, scaling and what breaks, disk and volumes, and the operational gotchas |
+| `docs/Configuration.md` | Every knob and what moves when it does; published port versus in-network address; the load-bearing values; retention/TTL/sampling with **measured** values; what must change together |
+| `docs/Debugging.md` | The centrepiece: symptom → signal → tool → query, four investigations from real measurements each naming the wrong turn, how to pivot between signals, what each tool is bad at |
+| `docs/Exercises.md` | Six graded levels, each a question with a checkable answer; solutions in a separate section |
+
+### The rule that made this step worth doing
+
+> **Every command must be copy-pasteable and verified against the running stack.**
+
+That is not a style preference — it is what turned this step into a bug hunt. Verifying the guides
+found, in the repository and in the step-18 documents written days earlier:
+
+| Found | Where |
+| --- | --- |
+| `chaos.sh reset` **completely broken on Windows** — Python's `print()` emits `\r\n`, so proxy names carried a trailing `\r` and every URL was rejected | `scripts/chaos.sh` |
+| `chaos.sh` picked the Windows Store `python3` stub, which passes `command -v` and then refuses to run | `scripts/chaos.sh` |
+| Topics have **3 partitions, not 7** — the second argument to `create_topic` is *retention days*. This inverts the conclusion: `concurrency: 3` already matches 1:1 | 4 step-18 documents |
+| Prometheus retention is **1 day**, not the documented 15; VictoriaMetrics 30 days, not 90 | `SystemDesign.md §11` |
+| A stale `.env` has **two** failure modes, and the harder one starts nothing at all | `Deployment.md`, `Troubleshooting.md` |
+| Kafka 4.x moved `GetOffsetShell`; the old name fails silently as "0 messages" when stderr is discarded | `Runbook.md` |
+| One order produces **8** log lines, not 2–3; a trace has 47 spans split **28/19**, so span count and time are different questions | `Exercises.md` |
+
+An untested command in a learning document teaches the reader that the document is unreliable, which
+is the one lesson that cannot be unlearned.
+
+### Exercises, in order
+
+The document *is* the exercise set — six levels, from a container census to "find a claim in this
+repository that the running stack contradicts". Level 6.3 has a known answer, and it is the retention
+gap above.
+
+### Assessment
+
+You have understood this step when you can:
+
+- Bring the stack up from an empty clone without reading anything else, and tell success from a silent
+  failure at each stage
+- Explain why `hikaricp_connections_pending` moves before latency does
+- Take an order number and reach its trace, its logs and its flame graph without opening a UI
+- Say what `pg_up == 1` means while the service reports timeouts, and why that pair *is* the diagnosis
+- Predict the sustainable arrival rate from a pool size and a service time, then measure and be right
+- Name the wrong turn in an investigation you just completed
+
+---
+
 ## What each step teaches
 
 | Step | Core concept | Signature lesson |
@@ -380,10 +450,18 @@ You have understood this step when you can:
 | 16 | Alerting | Alert on symptoms a person would act on; an ignored channel is worse than none |
 | 17 | Failure simulation | A resilience mechanism never observed working is an assumption |
 | 18 | Documentation | Explain *why*; a decision without a rationale is folklore. Say what is **not** true, or a lab simplification gets copied into production |
+| **19** | **Learning by doing** | **A command that was never run is a guess. Verifying the guide against the stack is what finds the bugs in both** |
 
 ---
 
 ## Suggested reading order
+
+**First time here** — get it running, then understand it:
+
+1. [GETTING_STARTED.md](GETTING_STARTED.md) — empty clone to a confirmed order
+2. [docs/Operations.md](docs/Operations.md) — running it day to day
+3. [docs/Debugging.md](docs/Debugging.md) — the method, worked four times
+4. [docs/Exercises.md](docs/Exercises.md) — check whether it stuck
 
 **Newcomer** — understand the system:
 
