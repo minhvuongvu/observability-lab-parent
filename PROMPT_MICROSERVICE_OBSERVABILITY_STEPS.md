@@ -741,27 +741,32 @@ Stop.
 
 # STEP 18
 
-## Documentation
+## Reference Documentation
 
-Generate complete documentation.
+### Goal
 
-Include
+Complete the REFERENCE layer: one document per subsystem, organised so a reader
+who already knows what they are looking for can find it.
+
+This is the "what is this and how is it configured" layer. The "how do I do
+this" layer is step 19, and the two are not the same document written twice.
+
+### Already delivered
+
+Do NOT rewrite these. They exist and are current:
+
+- docs/Architecture.md, docs/SystemDesign.md, docs/Infrastructure.md
+- docs/Observability.md, docs/Logging.md, docs/Metrics.md
+- docs/Tracing.md, docs/Profiling.md, docs/Alerting.md
+- docs/Kafka.md, docs/Redis.md, docs/MinIO.md
+- docs/Consul.md, docs/Keycloak.md, docs/Grpc.md
+- docs/Simulation.md, docs/FailureSimulation.md
+
+### Still owed
 
 Deployment Guide
 
 Runbook
-
-Architecture
-
-Observability Guide
-
-Logging Guide
-
-Metrics Guide
-
-Tracing Guide
-
-Profiling Guide
 
 Troubleshooting Guide
 
@@ -774,6 +779,119 @@ Sequence Diagrams
 Infrastructure Diagram
 
 Final README
+
+Stop.
+
+---
+
+# STEP 19
+
+## Learning and Practice Guides
+
+### Goal
+
+This lab exists to be LEARNED FROM, not merely to run.
+
+Everything up to step 18 documents the system. This step documents how to work
+with it: bring it up, operate it, change it safely, break it deliberately, and
+find the cause using the tools.
+
+### Why this is not step 18
+
+Step 18 organises by SUBSYSTEM and is read by lookup.
+
+  "What is Loki configured to do?"
+
+Step 19 organises by TASK and is read in order, at a keyboard.
+
+  "An order is stuck PENDING. Where do I look?"
+
+Different organising principle, different reading mode. A reader who wants one
+is badly served by the other. Step 18 is also a DEPENDENCY: a debugging
+walkthrough points at the metrics and tracing references, so writing it first
+means writing against documents that do not exist.
+
+### Do NOT duplicate
+
+Two of the topics below are already documented in depth:
+
+- docs/Simulation.md - network faults, k6 load, measured saturation
+- docs/FailureSimulation.md - 13 in-process failure scenarios
+
+Step 19 ROUTES to them and adds exercises. It does not restate them. A second
+copy of a scenario is a second copy that goes stale, and the copy a reader finds
+first will be the wrong one.
+
+### Deliverables
+
+GETTING_STARTED.md
+
+- From an empty clone to a working stack, in order
+- What each prerequisite is actually for
+- What "it worked" looks like at every stage, so a learner can tell success
+  from a silent failure
+- The first order, end to end, and where to watch it in Grafana
+- The three things most likely to go wrong on a first run, and how each looks
+
+docs/Operations.md
+
+- Start, stop, rebuild, restart one service, destroy and start clean
+- Reading health: what healthy means for each component, and what it does not
+- Where the logs are, per component, and how to follow one
+- Scaling a service, and what breaks when you do
+- Disk, volumes and cleanup
+- Known operational gotchas, including the Kong balancer state after a chaos run
+
+docs/Configuration.md
+
+- Every knob that matters, where it lives, and what changes when it moves
+- The distinction between a PUBLISHED port and an IN-NETWORK address, which is
+  the single most common source of confusion in this stack
+- Which values are load-bearing: resource limits set the saturation point, and
+  changing them invalidates the calibrated k6 defaults
+- Retention, TTLs and sampling, and what each costs
+- What must change TOGETHER or the system misbehaves silently
+
+docs/Debugging.md
+
+The centrepiece.
+
+- Symptom to signal to tool to query
+- At least four worked investigations, start to finish, each beginning from a
+  symptom a user would report rather than from a metric
+- Each one must name the WRONG turn as well as the right one: the signal that
+  looks relevant and is not is most of what makes debugging hard
+- How to pivot between signals: metric to trace, trace to log, log to profile
+- What each tool is bad at, so a reader stops looking in the wrong place
+
+docs/Exercises.md
+
+- Graded, hands-on, using the simulation tooling that already exists
+- Each exercise poses a QUESTION to answer, not steps to follow
+- The answer is a number, a query or a diagnosis - something that can be checked
+- Solutions in a separate section, so the reader can try first
+- Ordered by dependency: the exercise that teaches trace-to-log correlation
+  comes after the one that teaches reading a trace
+
+### Rules
+
+Every command must be copy-pasteable and VERIFIED against the running stack.
+
+An untested command in a learning document teaches the reader that the document
+is unreliable, which is the one lesson that cannot be unlearned.
+
+State what the reader should SEE, not only what to type. A learner cannot tell a
+successful command from a silently failed one.
+
+Prefer a worked example over an explanation. Where both are needed, the example
+comes first.
+
+Say what is NOT true. This lab simplifies in several places - single-node
+everything, plaintext between services, credentials in a git-ignored file - and
+a learner who mistakes a lab simplification for a production pattern has learned
+something worse than nothing.
+
+Cross-link every guide to the reference document behind it, and back.
 
 Stop.
 

@@ -30,7 +30,8 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 16 | Alerting: rule categories, routing to email and webhook, exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into one, k6 load generation, Toxiproxy fault injection — [Simulation.md](docs/Simulation.md) | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints, a scenario runner, 13 documented scenarios — [FailureSimulation.md](docs/FailureSimulation.md) | **Complete** |
-| 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
+| 18 | Reference documentation: deployment guide, runbook, troubleshooting, performance, security, diagrams | Planned |
+| **19** | **Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises** | Planned |
 
 > **Numbering note.** Two steps have been inserted since the original plan, and everything after each
 > shifted rather than being dropped.

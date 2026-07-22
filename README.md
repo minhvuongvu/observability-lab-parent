@@ -475,7 +475,8 @@ documented before the next one starts.
 | 16 | Alerting: 33 rules in three severities, Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into `lab-net`, k6 load generation and Toxiproxy fault injection | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints guarded three ways, a scenario runner, and 13 documented scenarios. Found and fixed a dead-letter path that could never publish | **Complete** |
-| 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
+| 18 | Reference documentation: deployment guide, runbook, troubleshooting, performance, security, sequence diagrams, final README | Planned |
+| **19** | **Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises** | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 `PROMPT_MICROSERVICE_OBSERVABILITY_STEPS.md` (the order to build it in).
