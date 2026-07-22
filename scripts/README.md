@@ -11,7 +11,8 @@ to run from any working directory, and resolves its own toolchain rather than tr
 | `build.sh` | Builds all Maven modules against a JDK 21 toolchain. Extra arguments are forwarded to Maven. |
 | `infra.sh` | Drives the Docker infrastructure stack: start, stop, health, logs, destroy. Unrecognised commands pass through to `docker compose`. |
 | `load.sh` | Runs a k6 load scenario from inside the Docker network: `smoke`, `load`, `stress`, `spike`, `soak`. Results remote-write into the same Prometheus that scrapes the platform. |
-| `chaos.sh` | Injects latency, connection failures, resets and bandwidth caps into any dependency hop, through Toxiproxy. Takes effect immediately; `chaos.sh reset` undoes everything. |
+| `chaos.sh` | Injects faults at two levels: network (latency, connection failures, resets, bandwidth caps) through Toxiproxy, and in-process (leaks, CPU spikes, deadlocks, poison messages) through each service's chaos endpoints. `chaos.sh reset` clears both, always. |
+| `scenario.sh` | Runs one named failure scenario end to end: inject, hold, heal, report what to look at. Heals on exit including Ctrl-C. `--under-load` runs it while k6 offers traffic. |
 | `run-service.sh` | **The exception path.** Runs one service on the host for attaching an IDE debugger. Its container must be stopped first. Everything normally runs in Docker — see the script header for what this path gives up. |
 | `gateway.sh` | Validates, reloads and inspects the edge: Kong's routes, plugins and upstream target health. |
 | `token.sh` | Fetches a Keycloak access token via the password grant, for calling the protected APIs by hand. Prints only the token. |

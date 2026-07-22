@@ -37,6 +37,8 @@ import org.springframework.security.web.SecurityFilterChain;
  *   <li>{@code /actuator/**} and the OpenAPI/Swagger endpoints are open. Health and readiness feed
  *       the gateway and container probes, which present no token; the API docs describe a surface
  *       that is itself protected.
+ *   <li>{@code /api/v1/chaos/**} requires {@code ADMIN} on every method. Those endpoints exist only
+ *       under {@code local} and {@code dev}, and can break the process on purpose.
  *   <li>{@code DELETE /api/**} requires {@code ADMIN}. Destructive operations are the one place a
  *       plain user and an operator must differ.
  *   <li>every other {@code /api/**} call requires {@code USER} or {@code ADMIN}.
@@ -107,6 +109,16 @@ public class ResourceServerAutoConfiguration {
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html")
                         .permitAll()
                         .requestMatchers("/error").permitAll()
+                        // Chaos endpoints (step 17). ADMIN on every method, not just DELETE:
+                        // a POST here can deadlock the process, so "destructive" is the wrong
+                        // axis to reason about and the verb tells you nothing.
+                        //
+                        // This rule is stated unconditionally, even though the endpoints only
+                        // exist under local and dev. A matcher for a path that is not mapped
+                        // costs nothing, and the alternative - a profile-conditional security
+                        // rule - is how an endpoint ends up briefly unguarded when somebody
+                        // changes which profiles register it.
+                        .requestMatchers("/api/v1/chaos/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/api/**").hasRole("ADMIN")
                         .requestMatchers("/api/**").hasAnyRole("USER", "ADMIN")
                         .anyRequest().authenticated())

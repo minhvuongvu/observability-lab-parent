@@ -401,7 +401,34 @@ ORDER_SERVICE_MEMORY=384M ./scripts/infra.sh up    # watch it OOM under load
 
 ---
 
-## 6. Rules for running experiments
+## 6. The other half
+
+Everything on this page is injected from **outside** the process — a proxy in the network path, a
+signal to a container, a limit on a cgroup. That boundary is not an accident: a fault injected from
+outside needs no application code, cannot be left switched on in production, and behaves identically
+whatever the service is written in.
+
+Some failures cannot be produced that way. A memory leak, a CPU spike, a lock-ordering deadlock, a
+forced exception at a chosen point, a poisoned message — each is a thing the process must do to
+itself. Those are in **[FailureSimulation.md](FailureSimulation.md)**, thirteen scenarios in the same
+four-part form, driven by the same `chaos.sh` plus a scenario runner:
+
+```bash
+./scripts/scenario.sh list                     # every in-process scenario
+./scripts/scenario.sh memory-leak              # inject, hold, heal, report
+./scripts/scenario.sh db-exhaustion --under-load
+```
+
+`./scripts/chaos.sh reset` clears **both** levels — network toxics and in-process toggles, on both
+services. There is one reset command and it always returns the system to clean.
+
+Two of those thirteen scenarios found real defects on their first run: a dead-letter path that could
+never publish, and an injected exception whose response shape differed from a real one. Both are
+written up where they were found.
+
+---
+
+## 7. Rules for running experiments
 
 **Write the expectation down first.** A scenario whose expected signals were decided after seeing the
 output confirms nothing.

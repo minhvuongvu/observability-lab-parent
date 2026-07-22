@@ -451,3 +451,6 @@ sleep 60 && ./scripts/chaos.sh slow inventory-grpc 800
 The in-application toggles marked *(step 17)* do not exist yet. When they do, every one will be
 guarded by profile (`local`, `dev`) and by the `ADMIN` role, and disabled under `prod`. A chaos
 endpoint reachable in production is not a learning tool; it is a vulnerability.
+
+That step also owes each of these scenarios a one-command runner and a written expectation, in the
+same form as the ones above — inject, expected, verify, what it teaches.

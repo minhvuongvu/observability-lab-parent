@@ -5,6 +5,9 @@ import com.observability.lab.order.infrastructure.messaging.InventoryUpdatedMess
 import com.observability.lab.shared.exception.BusinessException;
 import com.observability.lab.shared.exception.ValidationException;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,7 +23,10 @@ import org.springframework.kafka.core.MicrometerConsumerListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.util.backoff.FixedBackOff;
 
@@ -102,10 +108,34 @@ public class KafkaConsumerConfiguration {
      */
     @Bean
     public DefaultErrorHandler inventoryUpdatedErrorHandler(
-            KafkaTemplate<String, String> kafkaTemplate,
+            ProducerFactory<String, String> orderProducerFactory,
+            ObjectMapper objectMapper,
             @Value("${app.kafka.topics.dead-letter}") String deadLetterTopic) {
 
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate,
+        // A template that can serialise what the recoverer is actually handed, which is NOT a
+        // String.
+        //
+        // The listener's value deserializer produces InventoryUpdatedMessage objects, so by the
+        // time a record fails, its value is an object. Handing the recoverer the application's
+        // KafkaTemplate<String, String> meant StringSerializer received that object and threw
+        // ClassCastException - so the dead-letter publication failed, the record was never
+        // recovered, and the error handler retried it forever. One poison message blocked its
+        // partition permanently, and consumer lag sat at 1 with no dead-letter record to explain
+        // why.
+        //
+        // That defect survived until step 17's chaos endpoint published the first real poison
+        // message. It is the reason a dead-letter path that has never been exercised is a
+        // dead-letter path that does not work: everything about it looks correct in review.
+        //
+        // Re-serialising to JSON also makes the dead-lettered payload readable by a human, which
+        // is the entire point of keeping it.
+        Map<String, Object> dlqProducerProperties =
+                new HashMap<>(orderProducerFactory.getConfigurationProperties());
+        DefaultKafkaProducerFactory<String, Object> dlqFactory = new DefaultKafkaProducerFactory<>(
+                dlqProducerProperties, new StringSerializer(), new JsonSerializer<>(objectMapper));
+        KafkaTemplate<String, Object> dlqTemplate = new KafkaTemplate<>(dlqFactory);
+
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(dlqTemplate,
                 (record, exception) -> new TopicPartition(deadLetterTopic, record.partition()));
 
         DefaultErrorHandler handler = new DefaultErrorHandler(

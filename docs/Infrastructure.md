@@ -389,7 +389,7 @@ This step brings the components up. It does not configure what they do:
 | Step 07 | Keycloak realm, clients, roles, users; the JWT plugin starts enforcing |
 | Step 08 | Consul service registration and KV configuration |
 | Step 10–13 | The entire observability stack |
-| Step 17 | In-application chaos endpoints. The faults available today are network-level, injected by Toxiproxy from outside the process — see [Simulation.md](Simulation.md). A memory leak, a CPU spike or a deliberate deadlock cannot be produced from outside and need code |
+| — | Nothing. Step 17 completed the failure-simulation surface: network faults in [Simulation.md](Simulation.md), in-process faults in [FailureSimulation.md](FailureSimulation.md). Step 18 consolidates the documentation |
 
 ---
 

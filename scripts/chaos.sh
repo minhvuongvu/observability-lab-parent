@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Injects faults into the network paths between the services and everything
-# below them.
+# Injects faults, at two levels.
+#
+# NETWORK faults, through Toxiproxy, in the path between the services and
+# everything below them:
 #
 #   ./scripts/chaos.sh list                    proxies and their active toxics
 #   ./scripts/chaos.sh slow <proxy> <ms> [jitter]   add latency
@@ -10,22 +12,46 @@
 #   ./scripts/chaos.sh reset-peer <proxy> [ms] RST the connection
 #   ./scripts/chaos.sh throttle <proxy> <kbps> cap bandwidth
 #   ./scripts/chaos.sh heal <proxy>            remove this proxy's toxics
-#   ./scripts/chaos.sh reset                   remove every toxic, enable all
 #
 #   proxy: postgres | oracle | redis | kafka | minio
 #          inventory-http | inventory-grpc
 #
-# It drives Toxiproxy's HTTP API, which takes effect on the next connection and
-# needs no restart of anything. That immediacy is the point: an experiment you
-# can undo in one command is an experiment you will actually run.
+# IN-PROCESS faults (step 17), through each service's chaos endpoints - the
+# ones a proxy cannot produce because the process has to do them to itself:
 #
-# Every fault here is a NETWORK fault, which is deliberate. A service that
-# returns an error is easy to simulate and rarely how production breaks;
-# production breaks by getting slow, by half-answering, and by accepting
-# connections it never replies to. Those are the ones below.
+#   ./scripts/chaos.sh app status [svc]        what each service has injected
+#   ./scripts/chaos.sh app latency <svc> <ms> [ratio]
+#   ./scripts/chaos.sh app exception <svc> [ratio]
+#   ./scripts/chaos.sh app cpu <svc> [threads] [seconds]
+#   ./scripts/chaos.sh app memory <svc> <mb>   retain until released
+#   ./scripts/chaos.sh app deadlock <svc>      PERMANENT until restart
+#   ./scripts/chaos.sh app logs <svc> <lines> [level]
+#   ./scripts/chaos.sh app payload <svc> <kb>
+#   ./scripts/chaos.sh app traffic <svc> <requests> [concurrency]
+#   ./scripts/chaos.sh app db <svc> <seconds> [connections]
+#   ./scripts/chaos.sh app cache <svc> <miss|fail>
+#   ./scripts/chaos.sh app kafka <svc>         producer-side send failure
+#   ./scripts/chaos.sh app dlq <svc>           poison message -> dead letter
+#   ./scripts/chaos.sh app breaker <svc> [calls]
 #
-# Scenarios with the expected signal for each, per pillar, are in
-# docs/Simulation.md.
+#   svc: order | inventory
+#
+# And the one that must always work:
+#
+#   ./scripts/chaos.sh reset                   clear BOTH levels, everywhere
+#
+# Toxiproxy takes effect on the next connection; the endpoints take effect on
+# the next request. Neither needs a restart of anything, which is the point: an
+# experiment you can undo in one command is an experiment you will actually run.
+#
+# The split between the two levels is not arbitrary. A fault injected from
+# outside needs no application code and cannot be left switched on in
+# production, so anything that can live out there does. What is left in-process
+# is what genuinely cannot: a leak, a CPU spike, a deadlock, a poison message.
+#
+# Scenarios with the expected signal for each, per pillar:
+#   docs/Simulation.md         network faults and load
+#   docs/FailureSimulation.md  the in-process faults below
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -207,13 +233,218 @@ cmd_heal() {
   echo "'${proxy}' is healthy again."
 }
 
+# ============================================================================
+# In-process faults (step 17)
+#
+# These call each service's own /api/v1/chaos endpoints, which exist only under
+# the local and dev profiles and require the ADMIN role. Everything below is a
+# fault the process inflicts on itself and that no proxy could produce.
+# ============================================================================
+
+ORDER_URL="http://${BIND_HOST:-127.0.0.1}:${ORDER_SERVICE_PORT:-8081}"
+INVENTORY_URL="http://${BIND_HOST:-127.0.0.1}:${INVENTORY_SERVICE_PORT:-8082}"
+
+# Resolved once per invocation. The endpoints require ADMIN, which `manager`
+# has and `alice` does not.
+CHAOS_TOKEN=""
+chaos_token() {
+  if [ -z "${CHAOS_TOKEN}" ]; then
+    CHAOS_TOKEN="$("${SCRIPT_DIR}/token.sh" manager 2>/dev/null)" \
+      || die "could not obtain an ADMIN token. Is Keycloak up? ./scripts/infra.sh health"
+  fi
+  printf '%s' "${CHAOS_TOKEN}"
+}
+
+# service_url <order|inventory>
+service_url() {
+  case "${1:-}" in
+    order|order-service)         printf '%s' "${ORDER_URL}" ;;
+    inventory|inventory-service) printf '%s' "${INVENTORY_URL}" ;;
+    *) die "unknown service '${1:-}'. Use 'order' or 'inventory'." ;;
+  esac
+}
+
+# app_call <service> <METHOD> <path> [json-body]
+app_call() {
+  local svc="$1" method="$2" path="$3" body="${4:-}"
+  local url; url="$(service_url "${svc}")"
+  local args=(-fsS -X "${method}" "${url}${path}"
+              -H "Authorization: Bearer $(chaos_token)")
+  if [ -n "${body}" ]; then
+    args+=(-H 'Content-Type: application/json' -d "${body}")
+  fi
+  curl "${args[@]}" || die \
+"${method} ${path} on '${svc}' failed.
+       404 means the service is running a profile without the chaos endpoints
+       (they exist only under local and dev). 403 means the token lacks ADMIN."
+}
+
+cmd_app() {
+  local action="${1:-status}"
+  [ $# -gt 0 ] && shift || true
+
+  case "${action}" in
+    status)
+      local svc
+      for svc in ${1:-order inventory}; do
+        echo "=== ${svc} ==="
+        app_call "${svc}" GET /api/v1/chaos | pretty
+      done
+      ;;
+
+    latency)
+      local svc="${1:?usage: app latency <svc> <ms> [ratio]}" ms="${2:?missing ms}" ratio="${3:-1.0}"
+      app_call "${svc}" POST /api/v1/chaos/latency \
+        "{\"delayMs\":${ms},\"ratio\":${ratio},\"ttlSeconds\":0}" | pretty
+      echo
+      echo "Every API request on '${svc}' now sleeps ${ms}ms on its request thread."
+      echo "Watch tomcat_threads_busy climb: the thread is held, not parked."
+      ;;
+
+    exception)
+      local svc="${1:?usage: app exception <svc> [ratio]}" ratio="${2:-1.0}"
+      app_call "${svc}" POST /api/v1/chaos/exception \
+        "{\"ratio\":${ratio},\"ttlSeconds\":0}" | pretty
+      ;;
+
+    cpu)
+      local svc="${1:?usage: app cpu <svc> [threads] [seconds]}" threads="${2:-4}" seconds="${3:-60}"
+      app_call "${svc}" POST /api/v1/chaos/cpu \
+        "{\"threads\":${threads},\"durationSeconds\":${seconds}}" | pretty
+      echo
+      echo "Heap stays flat and process_cpu_usage climbs. That pairing is the"
+      echo "signature - compare it with 'app memory', which does the opposite."
+      ;;
+
+    memory)
+      local svc="${1:?usage: app memory <svc> <mb>}" mb="${2:?missing mb}"
+      app_call "${svc}" POST /api/v1/chaos/memory-leak "{\"megabytes\":${mb}}" | pretty
+      echo
+      echo "Released with: $(basename "$0") app release-memory ${svc}"
+      ;;
+
+    release-memory)
+      local svc="${1:?usage: app release-memory <svc>}"
+      app_call "${svc}" DELETE /api/v1/chaos/memory-leak | pretty
+      ;;
+
+    deadlock)
+      local svc="${1:?usage: app deadlock <svc>}"
+      echo "This is PERMANENT. Two threads are lost until the container restarts."
+      app_call "${svc}" POST /api/v1/chaos/deadlock | pretty
+      echo
+      echo "Nothing in metrics or traces will say 'deadlock'. The JVM knows:"
+      echo "  docker exec lab-${svc}-service jcmd 1 Thread.print | grep -A5 deadlock"
+      ;;
+
+    logs)
+      local svc="${1:?usage: app logs <svc> <lines> [level]}" lines="${2:?missing lines}" level="${3:-INFO}"
+      app_call "${svc}" POST /api/v1/chaos/log-burst \
+        "{\"lines\":${lines},\"level\":\"${level}\",\"paddingBytes\":256}" | pretty
+      ;;
+
+    payload)
+      local svc="${1:?usage: app payload <svc> <kb>}" kb="${2:?missing kb}"
+      local url; url="$(service_url "${svc}")"
+      echo "Direct to the service:"
+      curl -fsS -o /dev/null -w "  %{size_download} bytes in %{time_total}s\n" \
+        -H "Authorization: Bearer $(chaos_token)" \
+        "${url}/api/v1/chaos/large-payload?sizeKb=${kb}"
+      echo "Through the edge, where Kong's 1MB request-size-limiting plugin has an opinion:"
+      curl -s -o /dev/null -w "  HTTP %{http_code}, %{size_download} bytes in %{time_total}s\n" \
+        -H "Authorization: Bearer $(chaos_token)" \
+        "http://${BIND_HOST:-127.0.0.1}:${NGINX_HTTP_PORT:-80}/api/v1/chaos/large-payload?sizeKb=${kb}" \
+        || true
+      ;;
+
+    traffic)
+      local svc="${1:?usage: app traffic <svc> <requests> [concurrency]}" reqs="${2:?missing requests}" conc="${3:-50}"
+      app_call "${svc}" POST /api/v1/chaos/traffic \
+        "{\"requests\":${reqs},\"concurrency\":${conc},\"workMillis\":250}" | pretty
+      ;;
+
+    db)
+      local svc="${1:?usage: app db <svc> <seconds> [connections]}" secs="${2:?missing seconds}" conns="${3:-12}"
+      app_call "${svc}" POST /api/v1/chaos/db-slow \
+        "{\"seconds\":${secs},\"connections\":${conns}}" | pretty
+      echo
+      echo "With connections >= the pool size this exhausts it, and endpoints"
+      echo "with nothing to do with the database start failing. That indirection"
+      echo "is the lesson: the endpoint that breaks is rarely the one at fault."
+      ;;
+
+    cache)
+      local svc="${1:?usage: app cache <svc> <miss|fail>}" mode="${2:-miss}"
+      app_call "${svc}" POST /api/v1/chaos/cache \
+        "{\"mode\":\"${mode}\",\"ratio\":1.0,\"ttlSeconds\":0}" | pretty
+      echo
+      echo "Note what stays green: Redis is healthy, readiness is UP, and the"
+      echo "database quietly takes the full uncached load."
+      ;;
+
+    kafka)
+      local svc="${1:?usage: app kafka <svc>}"
+      app_call "${svc}" POST /api/v1/chaos/kafka | pretty
+      ;;
+
+    dlq)
+      local svc="${1:?usage: app dlq <svc>}"
+      app_call "${svc}" POST /api/v1/chaos/dead-letter | pretty
+      echo
+      echo "Watch the retries, then one record on dead-letter-topic:"
+      echo "  ./scripts/infra.sh logs ${svc}-service | grep -i 'retry\|dead'"
+      ;;
+
+    breaker)
+      local svc="${1:-order}" calls="${2:-30}"
+      app_call "${svc}" POST /api/v1/chaos/circuit-breaker "{\"calls\":${calls}}" | pretty
+      ;;
+
+    reset)
+      local svc
+      for svc in ${1:-order inventory}; do
+        echo "=== ${svc} ==="
+        app_call "${svc}" DELETE /api/v1/chaos | pretty
+      done
+      ;;
+
+    *)
+      die "unknown app command '${action}'. Try: $(basename "$0") help"
+      ;;
+  esac
+}
+
 cmd_reset() {
   require_api
   local proxy
   for proxy in $(proxy_names); do
     cmd_heal "${proxy}" >/dev/null
   done
-  echo "Every toxic removed; every proxy enabled."
+  echo "Network: every toxic removed, every proxy enabled."
+
+  # Both levels, always. A reset that cleared only the proxies would leave a
+  # latency toggle running inside a service, and the next person to look at a
+  # dashboard would be investigating a fault somebody injected on purpose and
+  # forgot - which is the exact failure mode this command exists to prevent.
+  #
+  # Best effort: the services may legitimately be down, and a reset that
+  # refused to clear the proxies because a service was unreachable would be
+  # useless precisely when it is needed.
+  local svc cleared
+  for svc in order inventory; do
+    if cleared="$(app_call "${svc}" DELETE /api/v1/chaos 2>/dev/null)"; then
+      echo "In-process (${svc}): $(printf '%s' "${cleared}" | tr -d '\n' | sed 's/.*"togglesCleared"://;s/,.*//') toggle(s) cleared."
+      case "${cleared}" in
+        *'"clean":false'*)
+          echo "  WARNING: this service has deadlocked threads, which cannot be cleared."
+          echo "           Restart it: docker restart lab-${svc}-service"
+          ;;
+      esac
+    else
+      echo "In-process (${svc}): unreachable, nothing cleared."
+    fi
+  done
+
   echo
   echo "Give the services a moment: connection pools and the circuit breaker"
   echo "recover on their own schedule, not on this command's. A breaker in the"
@@ -228,7 +459,8 @@ case "${1:-help}" in
   reset-peer)          shift; cmd_reset_peer "$@" ;;
   throttle)            shift; cmd_throttle "$@" ;;
   heal)                shift; cmd_heal "$@" ;;
+  app)                 shift; cmd_app "$@" ;;
   reset)               shift; cmd_reset "$@" ;;
-  help|-h|--help)      sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  help|-h|--help)      sed -n '2,53p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)                   die "unknown command '${1}'. Try: $(basename "$0") help" ;;
 esac

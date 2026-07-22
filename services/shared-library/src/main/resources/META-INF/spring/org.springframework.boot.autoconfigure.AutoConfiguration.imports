@@ -4,3 +4,4 @@ com.observability.lab.shared.autoconfigure.PersistenceAutoConfiguration
 com.observability.lab.shared.autoconfigure.ResourceServerAutoConfiguration
 com.observability.lab.shared.autoconfigure.MetricsAutoConfiguration
 com.observability.lab.shared.autoconfigure.GrpcAutoConfiguration
+com.observability.lab.shared.chaos.ChaosAutoConfiguration

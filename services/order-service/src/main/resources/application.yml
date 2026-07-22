@@ -249,6 +249,31 @@ app:
       secret-key: ${MINIO_SECRET_KEY:localdev_minio_app_pw}
       bucket: ${MINIO_INVOICE_BUCKET:invoices}
 
+  # Failure simulation (step 17). Deliberate faults, for observability learning.
+  #
+  # The endpoints exist only under the local and dev profiles - see
+  # ChaosAutoConfiguration - so this flag is a second switch rather than the
+  # only one. It is here so a shared dev environment can turn the feature off
+  # without a rebuild, which matters the first time a colleague deadlocks it.
+  #
+  # Every ceiling below is a bound on what a caller may ask for, not a default.
+  # They exist because these faults are indistinguishable from a defect once
+  # running: an unbounded memory leak is an OOM kill that takes the JVM with it
+  # before anyone reads the flame graph it was supposed to produce.
+  chaos:
+    enabled: true
+    # Every toggle expires on its own, so "forgot to reset" is a lab that
+    # recovers by itself rather than a debugging session three days later.
+    default-ttl: 5m
+    max-ttl: 30m
+    max-latency: 30s
+    max-cpu-threads: 8
+    max-cpu-duration: 2m
+    max-memory-leak-mb: 512
+    max-log-burst-lines: 100000
+    max-payload-kb: 65536
+    max-traffic-requests: 10000
+
   invoice:
     # Long enough for a person to follow the link, short enough that a URL
     # leaked through a log or a referrer header stops working quickly.

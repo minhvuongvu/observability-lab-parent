@@ -428,7 +428,8 @@ by service and environment.
 | [docs/Alerting.md](docs/Alerting.md) | Alerting: severities and what each means, the full alert matrix, Alertmanager routing, grouping and inhibition, delivery to email and webhook, and the first response to every alert |
 | [docs/Grpc.md](docs/Grpc.md) | The internal gRPC hop: the contract and codegen, the interceptor chain, discovery and client-side load balancing, deadlines, status taxonomy, retries, circuit breaking, and what all of it emits |
 | [docs/Observability.md](docs/Observability.md) | **The map.** What each of the four signals is for, how they link, the eleven dashboards, and where to look by symptom |
-| [docs/Simulation.md](docs/Simulation.md) | **Load, failure and latency on demand.** The k6 scenarios, the Toxiproxy faults, and six worked scenarios stating what every signal should show |
+| [docs/Simulation.md](docs/Simulation.md) | **Load, failure and latency on demand.** The k6 scenarios, the Toxiproxy faults, and seven worked scenarios stating what every signal should show |
+| [docs/FailureSimulation.md](docs/FailureSimulation.md) | **The in-process faults.** Thirteen production failures — leaks, CPU spikes, deadlocks, poison messages — each one command, each with its expected signals written down first |
 
 ### gRPC — the design behind step 15
 
@@ -473,7 +474,7 @@ documented before the next one starts.
 | 15 | Enterprise gRPC: proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
 | 16 | Alerting: 33 rules in three severities, Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into `lab-net`, k6 load generation and Toxiproxy fault injection | **Complete** |
-| **17** | **In-application failure simulation: memory leaks, CPU spikes, deliberate deadlocks, DLQ, exception injection** | Planned |
+| 17 | Failure simulation: 14 chaos endpoints guarded three ways, a scenario runner, and 13 documented scenarios. Found and fixed a dead-letter path that could never publish | **Complete** |
 | 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and

@@ -624,6 +624,24 @@ Stop.
 
 ## Production Failure Simulation
 
+### Already delivered
+
+The containerisation change shipped everything that can be injected from
+OUTSIDE a process. Do NOT rebuild any of it:
+
+- Toxiproxy in front of every dependency hop, including service-to-service
+- Latency, connection refusal, black hole, connection reset, bandwidth cap
+- k6 load generation from inside the network: smoke, load, stress, spike, soak
+- scripts/chaos.sh and scripts/load.sh
+- docs/Simulation.md with seven scenarios, written signal by signal
+
+This step covers ONLY what cannot be produced from outside the process.
+
+A memory leak, a CPU spike, a deliberate deadlock and a forced exception all
+need code. A slow database does not.
+
+### Endpoints
+
 Create endpoints for
 
 Slow Request
@@ -655,6 +673,67 @@ Large Payload
 Exception Simulation
 
 These endpoints exist ONLY for observability learning.
+
+Guard every one of them.
+
+- local and dev profiles only
+- ADMIN role required
+- Disabled under prod
+
+A chaos endpoint reachable in production is not a learning tool.
+
+It is a vulnerability.
+
+### Scripts
+
+Every failure must be reproducible by ONE command.
+
+Not by a curl the reader has to assemble from the documentation.
+
+Extend scripts/chaos.sh to drive the in-application faults alongside the
+network ones it already drives.
+
+Add a scenario runner that performs a full experiment end to end.
+
+- Inject the fault
+- Hold it for a stated duration
+- Heal it
+- Print what to look at, and where
+
+Reset must always return the system to a clean state.
+
+Print the count of active faults before every run. A load test against a
+stack that still carries a toxic from an earlier experiment produces numbers
+that look like a regression and are an artefact.
+
+### Guide
+
+Document how to simulate every production failure.
+
+Use the form docs/Simulation.md already establishes.
+
+- Inject - the exact command
+- Expected - what EVERY signal should show, per signal
+- Verify - the concrete PromQL, LogQL or trace query
+- What it teaches - the failure this makes legible
+
+State the expectation BEFORE running the scenario.
+
+A scenario whose expected signals were written after seeing the output
+confirms nothing.
+
+Cover every endpoint above.
+
+Cover the combinations that only appear under load. A fault injected into an
+idle system tells you what the mechanism does. A fault injected into a
+saturated one tells you what it does when it matters, and the two are not
+the same.
+
+Name the alert each scenario should fire, and confirm it fired. An alert that
+has never fired is untested.
+
+Where observed behaviour differs from the expectation, record BOTH. The gap
+is the finding, and it is worth more than the scenario that went to plan.
 
 Stop.
 

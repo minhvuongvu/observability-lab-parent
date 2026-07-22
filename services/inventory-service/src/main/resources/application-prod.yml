@@ -12,6 +12,16 @@ spring:
 
 app:
   environment: prod
+
+  # Failure simulation is off, and stated explicitly rather than left to the
+  # profile guard in ChaosAutoConfiguration.
+  #
+  # Two independent switches for one feature is not redundancy for its own sake.
+  # The profile guard is a Java annotation that a refactor can widen by accident;
+  # this line is in the file an operator reads when asking "can this environment
+  # be made to deadlock itself remotely". Both must say no.
+  chaos:
+    enabled: false
   grpc:
     server:
       # Server reflection publishes the full service schema - every method, every

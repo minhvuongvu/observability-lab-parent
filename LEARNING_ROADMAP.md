@@ -29,7 +29,7 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 15 | Enterprise gRPC communication — proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
 | 16 | Alerting: rule categories, routing to email and webhook, exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into one, k6 load generation, Toxiproxy fault injection — [Simulation.md](docs/Simulation.md) | **Complete** |
-| **17** | **In-application failure simulation: memory leaks, CPU spikes, deliberate deadlocks, DLQ, exception injection** | Planned |
+| 17 | Failure simulation: 14 chaos endpoints, a scenario runner, 13 documented scenarios — [FailureSimulation.md](docs/FailureSimulation.md) | **Complete** |
 | 18 | Documentation: runbook, guides, sequence diagrams, final README | Planned |
 
 > **Numbering note.** Two steps have been inserted since the original plan, and everything after each
@@ -51,7 +51,9 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 >   in front of a dependency, or cap a service's CPU, when the service is a process on a laptop.
 >
 >   Step 17 is therefore now the *remainder* — the faults that can only be produced from inside the
->   process. Everything injectable from outside it already exists in
+>   process, plus the tooling that makes all of them repeatable: one command per failure, and a
+>   written guide stating what every signal should show before the scenario is run. Everything
+>   injectable from outside the process already exists in
 >   [docs/Simulation.md](docs/Simulation.md).
 >
 > Failure simulation is now step 17 and documentation step 18.
