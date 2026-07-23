@@ -188,15 +188,12 @@ launched*. They are kept apart so either can be read without the other.
 
 | Tool | Version | Needed for |
 | --- | --- | --- |
-| Docker + Compose | recent, with BuildKit, **10 GB** allocated | Running the entire system |
+| Docker + Compose | recent, with BuildKit | Running the entire system |
 | JDK | 21 or newer | *Optional* — building outside Docker, or the IDE debug path |
 | Maven | 3.9+ (or use `./mvnw`) | *Optional* — same |
 
 Docker is the only hard requirement. The services are compiled inside their image, so a fresh clone
 needs nothing but Docker to bring the whole system up.
-
-Oracle and the two services account for most of the memory figure. 8 GB works; below that Oracle will
-not start.
 
 The build compiles to Java 21 bytecode and enforces the toolchain floor, so an older JDK fails fast
 with a message rather than a confusing compilation error.
@@ -206,6 +203,201 @@ Check your machine:
 ```bash
 ./scripts/verify-toolchain.sh
 ```
+
+### Host requirements
+
+Two configurations, far enough apart to be worth separating. **Default** is `./scripts/infra.sh up`:
+35 services, 32 of them long-running. **Everything** adds the `search` and `load` profiles, for 41
+services — the configuration to size for if you want every component up at once.
+
+These are the resources that must reach *the containers*, which is not the same as the machine's specs:
+
+| Resource | Default stack | Everything enabled |
+| --- | --- | --- |
+| RAM available to containers | **10 GB** (8 GB floor) | **14 GB** |
+| CPU cores | 4 | 6–8 |
+| Free disk | ~20 GB | ~35 GB |
+| CPU architecture | x86-64 or arm64 | x86-64 or arm64 |
+
+Below 8 GB, Oracle (capped at 2560M) does not start and the stack fails on its first run.
+
+**How that maps to the machine depends on whether Docker runs inside a VM.**
+
+| Host | Relationship | Physical RAM the machine needs |
+| --- | --- | --- |
+| **Linux**, Docker Engine | No VM. Containers draw on host RAM directly; there is nothing to allocate | requirement **+ ~2 GB** → 12 GB default, **16 GB** for everything |
+| **macOS / Windows**, Docker Desktop | Docker runs in a VM whose memory is carved out of the host up front and unavailable to anything else | requirement **+ 6–8 GB** → 16 GB default, **22–24 GB** for everything |
+| **macOS**, Colima / **Windows**, WSL2 | Same VM model, allocation set differently (see below) | as above |
+
+The headroom is not padding. Once the host starts swapping, every latency number the lab produces is
+measuring the swap file rather than the system — which defeats the point of running it. The right
+allocation is the largest one that still leaves the host comfortable, not the largest Docker accepts.
+
+**Architecture.** Every pinned image is multi-arch, including Oracle: `gvenzl/oracle-free:23` publishes
+a native arm64 build, so Apple Silicon and arm64 Linux run the whole stack without emulation. The one
+exception is the commented-out `ORACLE_IMAGE=gvenzl/oracle-xe:21-slim-faststart` alternative in
+`.env` — 21c XE is x86-64 only, and on arm64 it runs under emulation: slower, and hungrier than the
+2560M budget assumes.
+
+**Disk.** The figures cover images, the 19 volumes and the Maven cache mount. Docker's build cache
+grows on top of that; a default stack rebuilt a few times measured 25 GB of images, 5 GB of volumes
+and a further 10 GB of build cache. `docker builder prune` reclaims the last of those without touching
+anything the lab needs. On macOS and Windows the VM's virtual disk has its own ceiling — separate from
+free space on the physical drive, and raised in the same settings pane as memory.
+
+**Line endings** are handled by `.gitattributes`, so a Windows clone behaves like a macOS or Linux one
+without configuring anything. The one remaining Windows runtime quirk is in
+[GETTING_STARTED.md §6](GETTING_STARTED.md#on-windows-one-extra-thing).
+
+### Where the memory goes
+
+The `deploy.resources.limits.memory` values sum to **15.6 GB** for the default stack and **20.6 GB**
+with `search` — both larger than the 10 GB and 14 GB recommended above. That is deliberate, and worth
+understanding before choosing a number.
+
+**A limit is a kill threshold, not a reservation.** `limits.memory: 768M` does not set 768 MB aside.
+It writes one number into the container's cgroup: exceed this and the kernel kills you. The container
+starts near zero and grows into it. So the sum of the limits answers *"what if all 32 containers hit
+their ceiling at the same instant?"* — a question with no practical bearing on how much RAM to
+allocate.
+
+**The stack is overbooked on purpose**, the way an airline sells 160 seats on a 150-seat aircraft. It
+works because the passengers do not all show up. Measured on an idle default stack, the 32
+long-running containers together use about **5.1 GB against the 15.6 GB of ceilings — 33%.** The
+spread across containers is what makes the average:
+
+| Container | In use / ceiling | Ratio |
+| --- | --- | --- |
+| `redis` | 10 MiB / 384M | **3%** |
+| `postgres` | 47 MiB / 768M | **6%** |
+| `kafka-exporter` | 10 MiB / 128M | **8%** |
+| `prometheus` | 154 MiB / 768M | 20% |
+| `oracle` | 865 MiB / 2560M | 34% |
+| `kafka` | 490 MiB / 1024M | 48% |
+| `order-service` | 594 MiB / 768M | **77%** |
+
+The containers at the top run no managed heap — the exporters are Go, `nginx` and `redis` are C — so
+they allocate roughly what they use, and their ceilings exist to contain a leak rather than to describe
+a working set. The ones at the bottom are JVMs, already holding a heap they have committed and will
+not give back.
+
+**Two ceilings, at two different levels**, and confusing them is the usual sizing mistake:
+
+- **The per-container limit** protects you from *one* container consuming everything. Cross it and only
+  that container is killed; the rest keep running. This is a targeted, diagnosable failure.
+- **The Docker allocation** is the real total. If the combined resident usage of every container
+  exceeds it, the kernel inside the VM starts OOM-killing to reclaim memory, and the victim is not
+  necessarily the container responsible.
+
+Per-container limits give no protection whatsoever against the second case. Insurance against that is
+what the 10 GB figure actually buys.
+
+**The `search` profile is where the overbooking assumption breaks**, and this is the part worth
+knowing before enabling it:
+
+| Component | Ceiling | Behaviour |
+| --- | --- | --- |
+| `opensearch`, `elasticsearch` | 1536M each | `-Xms768m -Xmx768m` — setting `-Xms` equal to `-Xmx` **commits the whole heap at startup** instead of growing into it, and unlike a Go process a JVM does not hand committed memory back. Over a gigabyte each once metaspace, thread stacks and off-heap buffers are counted |
+| `opensearch-dashboards`, `kibana` | 768M each | Node.js front ends, several hundred MB each |
+| `fluentd` | 512M | |
+
+These are passengers who always show up. Where the default stack sits at 33% of its ceilings, `search`
+starts near 75% of its own and stays there. The gap that makes the overbooking safe — the entire reason
+10 GB covers 15.6 GB of limits — is absent from precisely these five containers.
+
+Reading "+5 GB of ceilings" and reasoning "so about 1.7 GB in practice, like the other 33%" is the
+specific mistake that ends in an OOM kill. Budget `search` at close to its stated limits.
+
+The 33% for the default stack is measured. The 75% for `search` is derived from the configured heap
+settings rather than observed, so treat it as a floor to budget against, not a prediction.
+
+Add to that the growth under load — the two services climbing to their 768M ceiling, and Prometheus,
+Loki, Tempo and VictoriaMetrics expanding as data accumulates over a long session. 14 GB covers the
+projected peak with room left over; 10 GB does not.
+
+### Configuring Docker
+
+Where the memory setting lives depends on the runtime. Whichever applies, the change takes effect only
+after the VM restarts, and the restart stops every container — bring the stack back with
+`./scripts/infra.sh up` afterwards.
+
+**Docker Desktop on macOS**, and **on Windows with the Hyper-V backend** — Settings → Resources →
+Advanced. Set *Memory* to 14 GB and *CPUs* to 6 or more, then *Apply & Restart*. The virtual disk
+size is on the same pane.
+
+**Docker Desktop on Windows with the WSL 2 backend** — the Resources pane has **no memory slider**,
+because WSL owns the VM. Create or edit `%UserProfile%\.wslconfig`:
+
+```ini
+[wsl2]
+memory=14GB
+processors=6
+```
+
+Then apply it by shutting WSL down (`wsl --shutdown` in PowerShell) and restarting Docker Desktop.
+Editing Docker Desktop's settings instead has no effect on this backend, which is the usual reason a
+Windows machine with plenty of RAM still OOM-kills Oracle.
+
+**Colima (macOS / Linux)** — the allocation is fixed when the VM is created, so it must be recreated:
+
+```bash
+colima stop && colima start --memory 14 --cpu 6 --disk 100
+```
+
+**Docker Engine on Linux** — there is no VM and nothing to allocate. Containers draw on host RAM
+directly, so the per-container `deploy.resources.limits` are the only ceilings, and the requirement is
+simply that the machine has the RAM free.
+
+Whatever the platform, confirm what the daemon actually received rather than what the settings pane
+claims:
+
+```bash
+docker info --format 'Memory: {{.MemTotal}} bytes, CPUs: {{.NCPU}}'
+```
+
+### Enabling every component
+
+The five `search` containers and the `load` generator are profile-gated, and stay down unless asked
+for. Enable them for the whole project by setting the profiles in `docker/compose/.env`, which Compose
+reads automatically:
+
+```properties
+COMPOSE_PROFILES=search
+```
+
+Setting it in `.env` rather than prefixing individual commands means every entry point agrees:
+`infra.sh up`, `infra.sh health`, `infra.sh down` and any direct `docker compose` call all see the
+same service list, with nothing to remember and nothing left running because one invocation knew
+about a profile and the next did not.
+
+**On a Linux host, `search` needs one kernel setting first.** OpenSearch and Elasticsearch both mmap
+their indices and refuse to start when `vm.max_map_count` is below 262144, which is above the default
+on most distributions. The compose files cannot set it — it is a host-wide kernel parameter:
+
+```bash
+sysctl vm.max_map_count                              # check; needs >= 262144
+sudo sysctl -w vm.max_map_count=262144                # until the next reboot
+echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-lab.conf   # permanently
+```
+
+This does not apply to Docker Desktop or Colima, whose VMs already ship a sufficient value — which is
+why the default stack has never needed it and why this bites only when `search` is first enabled on
+Linux. The symptom is an `opensearch` container that exits during startup with `max virtual memory
+areas vm.max_map_count [65530] is too low`.
+
+Then start the stack as usual, and generate load in a second terminal:
+
+```bash
+./scripts/infra.sh up
+./scripts/load.sh load        # starts the k6 container from the `load` profile
+```
+
+Note what "everything at once" does and does not buy. The lab deliberately carries alternatives for
+the same job — Loki against OpenSearch and Elasticsearch for logs, Prometheus against VictoriaMetrics
+for metrics, Tempo against Jaeger against Zipkin for traces. Running them side by side is what makes
+comparison on identical traffic possible, and it is the reason `search` exists. It is not a more
+faithful production simulation; no production system runs three tracing backends. If realism is the
+goal rather than comparison, pick one backend per signal and 10 GB is ample.
 
 ## Build
 
