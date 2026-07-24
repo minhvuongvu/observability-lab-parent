@@ -170,7 +170,13 @@ def write(folder, name, doc):
     # alike, and Python's default translates "\n" to CRLF on the latter. Without
     # this, regenerating on Windows rewrites every byte of every dashboard and
     # the diff is line endings rather than the change actually being reviewed.
-    (d / name).write_text(json.dumps(doc, indent=2) + "\n", newline="\n")
+    #
+    # Written through open() rather than Path.write_text(newline=...), which
+    # only grew that keyword in Python 3.10 and raises TypeError on 3.9 - the
+    # version macOS still ships as /usr/bin/python3. The behaviour is identical;
+    # this form simply also runs on the interpreter most likely to be picked up.
+    with open(d / name, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(doc, indent=2) + "\n")
     print(f"  {folder}/{name}")
 
 
@@ -966,6 +972,103 @@ profiles = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Vault - the secret store.
+#
+# No $service variable on this dashboard. Vault's metrics carry no `service`
+# label, so the shared template would render an empty selector and every panel
+# would silently match nothing - a dashboard that looks built and shows no data.
+# ---------------------------------------------------------------------------
+vault = dashboard(
+    "lab-vault", "Vault — Secret Store",
+    "Whether anything can still get a credential out of Vault, and what it has issued. "
+    "Read the seal state first: a sealed Vault breaks nothing immediately, so every other "
+    "panel here - and every dashboard in this folder - looks healthy for as long as the "
+    "leases already held remain valid. See docs/Vault.md.",
+    ["vault", "security"],
+    [
+        row(100, "Availability", 0),
+        stat(1, "Seal state",
+             "max(vault_core_unsealed)",
+             0, 1, w=6,
+             desc="1 = unsealed and serving, 0 = sealed and refusing everything.\n\n"
+                  "max() is not decoration. Vault publishes this gauge twice, once with "
+                  "the real cluster id and once with cluster=\"\" permanently at 0, so the "
+                  "obvious `vault_core_unsealed` panel shows a healthy Vault as sealed.",
+             steps=[(RED, None), (GREEN, 1)]),
+        stat(2, "Vault up",
+             'max(up{job="vault"})',
+             6, 1, w=6,
+             desc="Distinct from sealed. Sealed means answering and refusing; down means "
+                  "not answering. The first needs an unseal, the second needs a container.",
+             steps=[(RED, None), (GREEN, 1)]),
+        stat(3, "Outstanding leases",
+             "max(vault_expire_num_leases)",
+             12, 1, w=6, graph="area",
+             desc="Dynamic credentials currently alive. Each one is a real PostgreSQL user "
+                  "that exists right now and will be dropped when its lease ends.",
+             steps=[(ORANGE, None), (GREEN, 1)]),
+        stat(4, "Active tokens",
+             "max(vault_token_count)",
+             18, 1, w=6, graph="area",
+             desc="One per authenticated client, plus renewals. Both services hold one each."),
+
+        row(101, "Requests and refusals", 5),
+        timeseries(5, "Responses by status class",
+                   [target('sum by (type) (rate(vault_core_response_status_code[$__rate_interval]))',
+                           "{{type}}")],
+                   0, 6, w=12, unit="reqps",
+                   desc="4xx here is usually 403 - a policy refusing a read. A steady rate of "
+                        "them means something is asking for a secret it was never granted, and "
+                        "./scripts/vault.sh audit names the path.",
+                   overrides=[color_override("2xx", GREEN),
+                              color_override("4xx", ORANGE),
+                              color_override("5xx", RED)]),
+        timeseries(6, "Permission denied (403/s)",
+                   [target('sum(rate(vault_core_response_status_code{code="403"}[$__rate_interval])) or vector(0)',
+                           "denied")],
+                   12, 6, w=12, unit="reqps",
+                   desc="The policy boundary doing its job, or a mis-scoped AppRole. "
+                        "./scripts/vault.sh deny produces a deliberate spike here.",
+                   overrides=[color_override("denied", ORANGE)]),
+
+        row(102, "Dynamic credentials", 14),
+        timeseries(7, "Leases issued/s by engine",
+                   [target('sum by (secret_engine) (rate(vault_secret_lease_creation[$__rate_interval])) or vector(0)',
+                           "{{secret_engine}}")],
+                   0, 15, w=12, unit="ops",
+                   desc="Every increment is a PostgreSQL user Vault created. This is the panel "
+                        "that separates Vault from an encrypted .env: a static secret store "
+                        "would sit flat at zero here forever."),
+        timeseries(8, "Outstanding leases",
+                   [target("max(vault_expire_num_leases)", "leases")],
+                   12, 15, w=12,
+                   desc="A drop to zero while the services are up means the credentials were "
+                        "revoked or expired. The Order Service keeps working on its open "
+                        "connections and fails at the next one the pool opens - which is why "
+                        "this panel leads the symptom by minutes."),
+
+        row(103, "Audit", 23),
+        timeseries(9, "Audit log failures/s",
+                   [target("sum(rate(vault_audit_log_request_failure[$__rate_interval])) or vector(0)",
+                           "failures")],
+                   0, 24, w=12, unit="ops",
+                   desc="Anything above zero is an outage in waiting. Vault refuses EVERY "
+                        "request once all audit devices fail - a deliberate choice, on the "
+                        "grounds that an unauditable secret store is worse than an "
+                        "unavailable one. The usual cause is a full disk.",
+                   overrides=[color_override("failures", RED)]),
+        timeseries(10, "Vault memory",
+                   [target("max(vault_runtime_alloc_bytes)", "allocated"),
+                    target("max(vault_runtime_sys_bytes)", "reserved")],
+                   12, 24, w=12, unit="bytes",
+                   desc="Vault mlocks its memory so secrets are never paged to disk. That is "
+                        "also why its container needs 512M rather than the 256M it appears to "
+                        "use - see docker-compose.platform.yml."),
+    ],
+    templating=[ds_var()],
+)
+
 if __name__ == "__main__":
     print("Writing dashboards:")
     write("overview", "platform-overview.json", overview)
@@ -978,3 +1081,4 @@ if __name__ == "__main__":
     write("alerting", "alerting.json", alerting)
     write("traces", "traces.json", traces)
     write("profiles", "profiles.json", profiles)
+    write("security", "vault.json", vault)

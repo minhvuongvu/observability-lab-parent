@@ -30,6 +30,7 @@ flowchart TB
         subgraph ctl["Control plane"]
             KC["keycloak :8080"]
             CS["consul :8500"]
+            VA["vault :8200<br/><i>boots sealed</i>"]
         end
 
         subgraph app["Application"]
@@ -159,7 +160,7 @@ flowchart LR
         A1["postgres, oracle, kafka, kafka-ui, redis, minio<br/>+ kafka-init, minio-init<br/>+ the lab-net network<br/>+ 5 data volumes"]
     end
     subgraph f2["docker-compose.platform.yml — edge & control"]
-        A2["consul, consul-init, keycloak, kong, nginx<br/>+ consul-data"]
+        A2["consul, consul-init, vault, keycloak, kong, nginx<br/>+ consul-data, vault-data, vault-logs"]
     end
     subgraph f3["docker-compose.observability.yml — telemetry"]
         A3["24 containers: Loki stack, Prometheus stack,<br/>tracing stack, Pyroscope, Grafana,<br/>Alertmanager + sinks, 5 exporters<br/>+ 12 volumes"]
@@ -210,6 +211,7 @@ This is the table that resolves most confusion in this stack.
 | Kong proxy / admin / manager | 8000 / 8001 / 8002 | `kong:8000` | `KONG_*_PORT` |
 | Keycloak | 8080 | `keycloak:8080` | `KEYCLOAK_PORT` |
 | Consul | 8500 | `consul:8500` | `CONSUL_PORT` |
+| Vault | 8200 | `vault:8200` | `VAULT_PORT` |
 | Order Service | 8081 | `order-service:8081` | `ORDER_SERVICE_PORT` |
 | Inventory Service | 8082 / 9082 | `inventory-service:8082` / `:9082` | `INVENTORY_SERVICE_PORT`, `INVENTORY_GRPC_PORT` |
 | PostgreSQL | 5432 | `postgres:5432` | `POSTGRES_PORT` |
@@ -322,6 +324,7 @@ flowchart TB
         RE[redis]
         MI[minio]
         CO[consul]
+        VA[vault]
         TX[toxiproxy]
         KONG[kong]
     end
@@ -391,6 +394,7 @@ starts when a neighbour is down is a service whose failures are attributable.
 | `keycloak` | 15 s | 20 | 90 s | ~6.5 min |
 | `kafka` | 10 s | 20 | 30 s | ~3.8 min |
 | `postgres`, `redis`, `minio`, `consul`, `kong` | 10 s | 5–10 | 10–20 s | < 2 min |
+| `vault` | 10 s | 5 | 5 s + unseal | n/a — unhealthy until unsealed, which is the point |
 
 `infra.sh up` allows `WAIT_TIMEOUT_SECONDS=900` overall. Oracle dominates that budget, and its
 generosity is deliberate — do not shorten it because a first boot looks stuck.
@@ -504,6 +508,8 @@ flowchart LR
     end
     subgraph plat["platform.yml"]
         V6[lab-consul-data]
+        V9[lab-vault-data]
+        V10[lab-vault-logs]
     end
     subgraph svc["services.yml"]
         V7[lab-logs]
@@ -519,6 +525,9 @@ flowchart LR
     RE[redis] --> V4
     MI[minio] --> V5
     CO[consul] --> V6
+    VA[vault] --> V9
+    VA --> V10
+    V10 --> PT2[promtail]
 
     OS[order-service] --> V7
     IS[inventory-service] --> V7
@@ -535,6 +544,8 @@ flowchart LR
 | `lab-redis-data` | AOF and RDB snapshots | yes |
 | `lab-minio-data` | Invoice objects | yes |
 | `lab-consul-data` | Registry state and KV | yes |
+| `lab-vault-data` | Every secret, and the barrier encrypting them. `.vault-keys.json` is deleted with it — those keys open this data and nothing else | yes |
+| `lab-vault-logs` | Vault audit records, tailed into Loki by Promtail | yes |
 | `lab-logs` | JSON log files, written by the services and read by three shippers | yes |
 | 12 observability volumes | Metrics, logs, traces, profiles, dashboards | yes |
 
@@ -555,16 +566,16 @@ formatted it, and a broker started with a different one refuses to mount its own
 ## 8. The resource budget
 
 Limits, not reservations. Docker does not pre-allocate these; most containers idle far below their
-ceiling, which is why 10 GB is enough for a stack whose limits sum to 15.6 GB.
+ceiling, which is why 10 GB is enough for a stack whose limits sum to 16.1 GB.
 
 | Tier | Containers | Sum of limits |
 | --- | --- | --- |
 | Data plane | postgres 768M, **oracle 2560M**, kafka 1024M, kafka-ui 512M, redis 384M, minio 512M | 5760M |
-| Edge & control | consul 384M, keycloak 1024M, kong 512M, nginx 192M | 2112M |
+| Edge & control | consul 384M, vault 512M, keycloak 1024M, kong 512M, nginx 192M | 2624M |
 | Applications | order-service 768M, inventory-service 768M | 1536M |
 | Observability | prometheus 768M, pyroscope 640M, loki/tempo/jaeger/grafana/victoriametrics 512M each, otel-collector 384M, zipkin 384M, alertmanager 256M, promtail 256M, oracle-exporter 256M, 6 × 128M | 6400M |
 | Simulation | toxiproxy 128M | 128M |
-| **Default total** | **35 containers** | **≈ 15.6 GB** |
+| **Default total** | **36 containers** | **≈ 16.1 GB** |
 | `search` profile | opensearch 1536M, elasticsearch 1536M, opensearch-dashboards 768M, kibana 768M, fluentd 512M | + 5.0 GB |
 
 **The two service limits are deliberately modest.** A service with room to spare never exhibits GC

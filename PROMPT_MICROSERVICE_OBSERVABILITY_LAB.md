@@ -21,6 +21,7 @@ This project is used for learning:
 - Service Discovery
 - API Gateway
 - Authentication
+- Secret Management
 - Event-driven Architecture
 - Containerized Infrastructure
 
@@ -60,6 +61,7 @@ Use:
 - Spring Data JPA
 - Spring Validation
 - Spring Security
+- Spring Cloud Vault
 - Spring Boot Actuator
 - Micrometer
 - OpenTelemetry SDK
@@ -98,6 +100,10 @@ Service Discovery
 Configuration
 
 - Consul KV
+
+Secret Management
+
+- HashiCorp Vault
 
 Message Broker
 
@@ -240,6 +246,12 @@ Authorization
 Service Discovery
 
 Externalized Config
+
+Secret Management
+
+Dynamic Database Credentials
+
+Credential Rotation
 
 Database
 
@@ -693,6 +705,62 @@ Spring Cloud Consul integration.
 
 ---
 
+# Vault
+
+Store every credential the stack uses.
+
+Persistent storage.
+
+Real init and unseal.
+
+No dev mode.
+
+Auth
+
+AppRole per service
+
+Policy scoped per path
+
+Least privilege
+
+Secrets Engines
+
+KV v2
+
+Database
+
+Generate dynamic PostgreSQL credentials with a TTL.
+
+Renew the lease while the service runs.
+
+Revoke the credential when the lease ends.
+
+Spring Cloud Vault integration.
+
+Consul KV keeps configuration.
+
+Vault keeps secrets.
+
+Never the other way round.
+
+A value that could appear in a screenshot is configuration.
+
+Everything else is a secret.
+
+Vault must be observable like every other component.
+
+Metrics
+
+Audit log
+
+Alerts
+
+Seal state
+
+Lease expiry
+
+---
+
 # MinIO
 
 Store uploaded invoice.
@@ -799,6 +867,8 @@ root
 
 /consul
 
+/vault
+
 /minio
 
 /redis
@@ -840,6 +910,8 @@ Gateway.md
 Keycloak.md
 
 Consul.md
+
+Vault.md
 
 MinIO.md
 

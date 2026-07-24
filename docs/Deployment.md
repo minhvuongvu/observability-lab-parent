@@ -3,7 +3,7 @@
 How this system is deployed, what a deployment consists of, and what it deliberately is not.
 
 > **Scope.** This is the reference for *deploying the stack as it exists*: one host, Docker Compose,
-> 35 containers on one network. It documents the deployment surface — files, variables, ordering,
+> 36 containers on one network. It documents the deployment surface — files, variables, ordering,
 > verification, rollback — rather than narrating a first run. The narrated first run belongs to
 > `GETTING_STARTED.md` (step 19); the component-by-component detail lives in
 > [Infrastructure.md](Infrastructure.md).
@@ -51,7 +51,7 @@ no JDK installed can still bring the whole system up.
 
 ### The memory figure, honestly
 
-The `deploy.resources.limits.memory` values across the default 35 containers sum to **15.6 GB**, and
+The `deploy.resources.limits.memory` values across the default 36 containers sum to **16.1 GB**, and
 the `search` profile adds 5 GB more. That number is a *ceiling*, not a reservation — Docker does not
 pre-allocate it, and most containers idle far below their limit. 10 GB is enough because the stack is
 never simultaneously at every ceiling.
@@ -76,7 +76,7 @@ The largest single claims:
 ```
 docker/compose/
   docker-compose.yml                core data plane    postgres, oracle, kafka, redis, minio + inits
-  docker-compose.platform.yml       edge & control     consul, keycloak, kong, nginx
+  docker-compose.platform.yml       edge & control     consul, vault, keycloak, kong, nginx
   docker-compose.observability.yml  telemetry          24 containers, 5 of them profile-gated
   docker-compose.services.yml       the two applications
   docker-compose.simulation.yml     toxiproxy, k6
@@ -159,7 +159,11 @@ cp .env ".env.stale-$(date +%Y%m%d-%H%M%S)" && cp .env.example .env
 1. `application.yml` in the service jar — the defaults, describing a standard local stack
 2. `application-{local,dev,prod}.yml` — profile overrides
 3. Consul KV, `config/application/data` — seeded by `consul-init`, watched at runtime
-4. Environment variables from the compose file, sourced from `.env`
+4. Vault, `secret/` and `database/` — credentials only, fetched at bootstrap over AppRole
+5. Environment variables from the compose file, sourced from `.env`
+
+Layers 3 and 4 never overlap: configuration in Consul, credentials in Vault, nothing in both. See
+[Vault.md §2](Vault.md#2-the-dividing-line).
 
 The visible proof that layer 3 is read: `/actuator/info` reports `platform.config-source`, which
 defaults to the string `"application.yml default (Consul KV not applied)"` and is overwritten by the
@@ -300,10 +304,16 @@ the observability stack:
   that starts when the identity provider is down.
 - `spring.cloud.consul.config.fail-fast: false` and `import: "optional:consul:"` mean a missing registry
   degrades to the bundled `application.yml` rather than a failed boot.
+- `spring.cloud.vault.fail-fast: true` does the **opposite**, deliberately. Configuration has safe
+  defaults; a credential does not, and a silent fallback there is indistinguishable from success.
 
 ### What each service does on startup
 
 1. Reads Consul KV (optional) and merges it over `application.yml`
+1b. Authenticates to Vault with its AppRole and reads its secrets — including, for the Order Service,
+    a PostgreSQL user Vault creates on the spot with a one-hour lease. **Fatal if Vault is
+    unreachable**, unlike Consul: a service that started without a credential would fall back to the
+    placeholder in `application.yml`, connect, work, and hide the fact that Vault was never consulted
 2. Runs Flyway migrations — `baseline-on-migrate: false`, so an existing schema with no Flyway history
    stops the boot for a human rather than guessing
 3. Hibernate validates the entity model against the migrated schema (`ddl-auto: validate`)
@@ -424,6 +434,7 @@ variable on a stack that already has data does nothing, silently.
 | `minio-init` | Every start | Bucket and least-privilege user — idempotent, so unaffected |
 | `kafka-init` | Every start | Four topics — idempotent |
 | `consul-init` | Every start | `config/application/data` — idempotent, overwrites |
+| `vault.sh bootstrap` | Every `infra.sh up` | Init (once), unseal (every start), seed — all idempotent |
 | Keycloak `--import-realm` | The realm does not exist | The realm, clients, roles, users, pinned RSA key |
 
 So: **Kafka, MinIO and Consul configuration changes take effect on the next `up`. Database credentials

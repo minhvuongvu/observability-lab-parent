@@ -32,6 +32,7 @@ Specifications: `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 | 17 | Failure simulation: 14 chaos endpoints, a scenario runner, 13 documented scenarios — [FailureSimulation.md](docs/FailureSimulation.md) | **Complete** |
 | 18 | Reference documentation: deployment, runbook, troubleshooting, performance, security, sequence and infrastructure diagrams | **Complete** |
 | 19 | Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises | **Complete** |
+| 20 | Secret management: Vault (real sealed server), AppRole per service, KV v2, dynamic PostgreSQL credentials, audit log into Loki — [Vault.md](docs/Vault.md) | **Complete** |
 
 > **Numbering note.** Two steps have been inserted since the original plan, and everything after each
 > shifted rather than being dropped.
@@ -330,7 +331,7 @@ three:
 2. **`scripts/load.sh`'s header disagreed with its own scenarios** — it advertised 50/800/500/20 where
    the k6 files default to 10/100/80/5. Fixed, because the true numbers are *measured* and the stale
    ones would have sent a reader chasing a system that does not exist.
-3. **The sum of the memory limits is 15.6 GB**, against a documented 10 GB requirement. Both are correct
+3. **The sum of the memory limits is 16.1 GB**, against a documented 10 GB requirement. Both are correct
    — limits are ceilings, not reservations — but the gap is worth stating rather than leaving a reader
    to discover it during a stress run.
 
@@ -451,6 +452,7 @@ You have understood this step when you can:
 | 17 | Failure simulation | A resilience mechanism never observed working is an assumption |
 | 18 | Documentation | Explain *why*; a decision without a rationale is folklore. Say what is **not** true, or a lab simplification gets copied into production |
 | **19** | **Learning by doing** | **A command that was never run is a guess. Verifying the guide against the stack is what finds the bugs in both** |
+| **20** | **Secret management** | **A failure whose symptom is delayed by an hour is harder than one that is loud. Vault sealed changes nothing visible — which is why seal state is alerted directly, not inferred** |
 
 ---
 
@@ -511,4 +513,6 @@ You have understood this step when you can:
 | How do you set timeouts across a call chain? | [docs/Performance.md §3](docs/Performance.md#3-the-latency-budget) — a callee's budget must be smaller than its caller's |
 | Where do you enforce authorization, edge or service? | [docs/Security.md §4–5](docs/Security.md#4-token-verification-twice) — both, independently |
 | What would you fix first before exposing this? | [docs/Security.md §12](docs/Security.md#12-what-is-deliberately-not-secured) |
+| How do you manage secrets, and where does the chain of trust end? | [docs/Vault.md §4 and §11](docs/Vault.md#4-the-bootstrap-problem) — the honest answer is a file on disk, made smaller, scoped and audited |
+| Static or dynamic database credentials? | [docs/Vault.md §7](docs/Vault.md#7-dynamic-postgresql-credentials) — dynamic for the runtime pool, static for migrations, and why that split is not optional |
 | How do you deploy and roll back? | [docs/Deployment.md §11](docs/Deployment.md#11-redeploy-rollback-and-teardown) — including why a migration cannot be |

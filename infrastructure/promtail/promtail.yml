@@ -82,3 +82,55 @@ scrape_configs:
       # Grafana can parse every field out of it on the way back. An output
       # stage here would replace the line with a single extracted field and
       # silently discard everything the labels did not capture.
+
+  # -------------------------------------------------------------------------
+  # Vault audit log.
+  #
+  # A second job rather than another path on the one above, because the schema
+  # is entirely different: Vault writes {time, type, auth, request, response},
+  # not the {@timestamp, level, service, trace_id} the services write. Run
+  # through the pipeline above, every extracted field would be null and every
+  # label empty - and the records would look ingested rather than broken, which
+  # is the worst of both outcomes.
+  #
+  # What this gives that metrics cannot: WHO read WHICH secret, and WHEN. A
+  # denied read appears here and nowhere else, so this is the log that answers
+  # "did the policy actually stop it?" - see ./scripts/vault.sh deny.
+  #
+  # Safe to ship. Vault HMACs every secret value before writing, so the audit
+  # log records that a value was read without recording the value. That is what
+  # makes it possible to keep the audit trail beside ordinary application logs.
+  - job_name: vault-audit
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: vault-audit
+          pipeline: promtail
+          service: vault
+          __path__: /var/log/vault/audit.log
+
+    pipeline_stages:
+      - json:
+          expressions:
+            time: time
+            type: type
+            error: error
+            operation: request.operation
+
+      - timestamp:
+          source: time
+          # Vault writes RFC3339 with nanoseconds.
+          format: RFC3339Nano
+
+      # Only `type` (request|response) and `operation` (read|update|list|...)
+      # become labels: a handful of values each.
+      #
+      # `request.path` deliberately stays inside the line. It carries a lease id
+      # on every dynamic credential read - database/creds/order-service is fine
+      # but sys/leases/renew/database/creds/order-service/<random> is not - so
+      # promoting it would create a new Loki stream per credential issued and
+      # bring the ingester down within a day. LogQL can still filter on it with
+      # `| json | request_path=~"..."`.
+      - labels:
+          type:
+          operation:

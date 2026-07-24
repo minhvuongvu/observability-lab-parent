@@ -119,7 +119,7 @@ outage.
 is set as well: an OOM is a fast exit and a restart, not a JVM limping along in a state nobody can
 reason about.
 
-The full stack of memory ceilings, and why their sum (15.6 GB) is not a reservation, is in
+The full stack of memory ceilings, and why their sum (16.1 GB) is not a reservation, is in
 [Deployment.md §2](Deployment.md#2-prerequisites).
 
 ---
@@ -390,7 +390,7 @@ came from a real N+1 defect in the REST path, and the justification is in
 | Document | For |
 | --- | --- |
 | [Simulation.md](Simulation.md) | The scenarios, and what every signal should show |
-| [FailureSimulation.md](FailureSimulation.md) | The 13 in-process faults, expectations written first |
+| [FailureSimulation.md](FailureSimulation.md) | 13 in-process faults plus 2 Vault ones, expectations written first |
 | [Metrics.md](Metrics.md) | Instrument types, cardinality, histograms vs pre-computed percentiles |
 | [Observability.md](Observability.md) | Where to look, by symptom |
 | [Alerting.md](Alerting.md) | The thresholds that turn these numbers into a page |

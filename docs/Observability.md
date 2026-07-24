@@ -79,7 +79,7 @@ into the MDC under the *same key* the log schema already used, and the outbox st
 
 ## 4. The dashboards
 
-Eleven, in folders. **Platform — Overview** is the landing page; the rest are what you open once
+Twelve, in folders. **Platform — Overview** is the landing page; the rest are what you open once
 you know which thing is unhappy.
 
 | Folder | Dashboard | Open it when |
@@ -93,6 +93,7 @@ you know which thing is unhappy.
 | alerting | **Alerting — Firing, Routing and Delivery** | Something fired, or you want to know whether the notifications are actually being delivered. See [Alerting.md](Alerting.md). |
 | grpc | **gRPC — Service Communication** | The internal synchronous hop: RED, the client/server duration gap, and the handler-pool saturation nothing else measures. See [Grpc.md](Grpc.md). |
 | metrics | **Business — Order Flow** | Everything technical is green but orders are not settling. |
+| security | **Vault — Secret Store** | Read the seal state first. A sealed Vault leaves every other dashboard here looking healthy for as long as the leases already held stay valid. See [Vault.md](Vault.md). |
 
 There is deliberately **no logs dashboard**. Log exploration is an Explore-tab activity — you
 arrive with a `trace_id` or a `correlation_id` and follow it — and a fixed panel of "recent errors"

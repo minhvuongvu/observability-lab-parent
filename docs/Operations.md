@@ -40,6 +40,31 @@ because you want a Compose flag `infra.sh` does not wrap — work from `docker/c
 cd docker/compose && docker compose up -d order-service
 ```
 
+### `up` starts Vault first, and unseals it
+
+Before anything else, `infra.sh up` brings up Vault alone and runs `./scripts/vault.sh bootstrap`
+against it — initialise, unseal, seed. Only then does it start the rest of the stack.
+
+This step exists because Vault is **not** running in dev mode. A real Vault boots **sealed on every
+start**, and no arrangement of `depends_on` can fix that: something has to present the unseal keys,
+and it cannot be a container in the same compose file, because it would need the very keys the seal
+is protecting.
+
+Vault's healthcheck passes only when **unsealed**, and both services declare
+`vault: condition: service_healthy` — so the ordering is enforced by compose as well as by the script.
+
+The consequence to remember: a bare `docker compose up`, a Docker Desktop restart or a machine reboot
+leaves Vault sealed. Nothing appears broken — running services keep serving from the secrets they
+already hold — until the next restart of a service, which then cannot start.
+
+```bash
+./scripts/vault.sh status     # Sealed  true/false
+./scripts/vault.sh unseal
+```
+
+`./scripts/chaos.sh reset` also unseals, for the same reason it clears toxics: a fault with no
+symptom is the one most likely to be left behind.
+
 ### `up` is idempotent, and rebuilds
 
 `infra.sh up` passes `--build` every time. That is deliberate: a stale service image is a debugging

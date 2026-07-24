@@ -17,21 +17,26 @@ Procedures. What to do, in what order, and how to know it worked.
 
 ---
 
-## 1. The five things to check before anything else
+## 1. The six things to check before anything else
 
-Run these before diagnosing, and before *measuring*. Four of the five take under a second.
+Run these before diagnosing, and before *measuring*. Five of the six take under a second.
 
 ```bash
 ./scripts/infra.sh health          # 1. is every container converged?
 ./scripts/chaos.sh list            # 2. is a fault still injected from an earlier experiment?
 ./scripts/chaos.sh app status      # 3. is an in-process fault still toggled on?
-docker stats --no-stream           # 4. is anything at its memory or CPU ceiling?
-curl -s 'http://localhost:9090/api/v1/query?query=up==0'   # 5. is any scrape target down?
+./scripts/vault.sh status          # 4. is Vault sealed?
+docker stats --no-stream           # 5. is anything at its memory or CPU ceiling?
+curl -s 'http://localhost:9090/api/v1/query?query=up==0'   # 6. is any scrape target down?
 ```
 
 Checks 2 and 3 exist because the most expensive mistake in this lab is diagnosing an artefact. A
 400 ms latency toxic left on `postgres` produces a system that looks broken in exactly the way a
 regression looks broken, and nothing in the metrics says "somebody did this on purpose".
+
+Check 4 is here for the opposite reason: a sealed Vault produces a system that looks **healthy**.
+Every service keeps serving from the secrets it already holds, so checks 1, 5 and 6 all pass while
+the next restart of anything will fail. It is the one fault in this stack with no immediate symptom.
 
 **`./scripts/chaos.sh reset` clears both levels, everywhere, always.** It is the first command of any
 investigation whose cause is not already known.
@@ -303,6 +308,85 @@ YAML
 ```
 
 Both services watch the key and re-bind without a restart. `/actuator/info` is the visible proof.
+
+### Vault
+
+```bash
+./scripts/vault.sh status      # seal state and mounts
+./scripts/vault.sh whoami      # which PostgreSQL user the Order Service is really using
+./scripts/vault.sh leases      # outstanding dynamic credentials
+./scripts/vault.sh audit 50    # every secret access, including refusals
+```
+
+**Vault boots sealed after every restart.** It is not dev mode. `./scripts/infra.sh up` unseals it
+before starting anything that needs a secret, but a bare `docker compose up`, a Docker Desktop
+restart or a machine reboot leaves it sealed with nothing to say so except the `VaultSealed` alert.
+
+Reference: [`docs/Vault.md`](Vault.md).
+
+#### Vault is sealed
+
+*Alert: `VaultSealed` / `VaultDown`.*
+
+Nothing breaks immediately, and that is the difficult part. Running services keep serving from the
+credentials and connections they already hold — latency flat, error rate flat, health endpoints
+green. The stack breaks at the next lease renewal or the next service restart, up to an hour later,
+by which point the cause looks unrelated.
+
+```bash
+./scripts/vault.sh unseal
+```
+
+If that reports the keys file missing, this Vault cannot be opened: `.vault-keys.json` holds the only
+copy of the unseal shares. The lab recovery is `./scripts/infra.sh destroy && ./scripts/infra.sh up`,
+which also destroys the databases.
+
+Confirm recovery with `./scripts/vault.sh whoami` — the Order Service should be connected as a
+`v-approle-order-se-...` user.
+
+#### Dynamic credential expired
+
+*Alert: `VaultLeaseCountCollapsed`.*
+
+The Order Service's PostgreSQL credential was revoked or expired without renewal. Existing pooled
+connections still work; the next one Hikari opens fails.
+
+```bash
+./scripts/vault.sh leases            # empty confirms it
+docker restart lab-order-service     # re-leases at startup
+./scripts/vault.sh whoami            # new v-approle-... user
+```
+
+If leases keep collapsing, check that `spring.cloud.vault.config.lifecycle.enabled` is still `true` —
+without renewal the credential dies at its 1h TTL every time.
+
+#### Vault authentication failing
+
+*Alert: `VaultPermissionDenied`.*
+
+Sustained 403s mean something is asking for a path its policy does not grant.
+
+```bash
+./scripts/vault.sh audit 50    # the denied path is named in the log
+./scripts/vault.sh deny        # confirms the boundary still behaves as designed
+```
+
+Most common cause after a config change: a new `SPRING_PROFILES_ACTIVE` value. Spring Cloud Vault
+also reads `secret/data/<service>/<profile>`, and Vault answers an ungranted path with 403 rather
+than 404 — so a missing grant and a missing secret look identical. The policies grant
+`secret/data/<service>/*` for exactly this reason.
+
+#### Vault audit device failing
+
+*Alert: `VaultAuditDeviceFailing`.*
+
+**Vault refuses every request when all audit devices are failing.** This is a total outage of the
+secret store, and the usual cause is a full disk rather than anything about Vault.
+
+```bash
+docker exec lab-vault df -h /vault/logs
+docker system df                          # reclaim: docker system prune
+```
 
 ### Keycloak
 
@@ -619,7 +703,7 @@ curl -s 'http://localhost:9090/api/v1/query?query=ALERTS{alertstate="firing"}'
 ```
 
 A green smoke run after a green health table is the strongest statement this lab can make about
-itself: 35 containers converged, the edge authenticating, both databases writable, the broker round
+itself: 36 containers converged, the edge authenticating, both databases writable, the broker round
 trip closing, and every threshold met.
 
 If `ALERTS` still returns something, read [Alerting.md §6](Alerting.md#6-incident-response) rather than
@@ -650,5 +734,5 @@ silencing it. A silence is a decision to stop looking, and it belongs in a ticke
 | [Deployment.md](Deployment.md) | Bringing it up, configuring it, rolling it back |
 | [Performance.md](Performance.md) | Measuring it, and what limits it |
 | [Simulation.md](Simulation.md) | Network faults and load, signal by signal |
-| [FailureSimulation.md](FailureSimulation.md) | The 13 in-process scenarios |
+| [FailureSimulation.md](FailureSimulation.md) | 13 in-process scenarios, plus 2 for the secret store |
 | [Observability.md](Observability.md) | Where to look, by symptom |

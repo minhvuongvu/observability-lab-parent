@@ -282,9 +282,16 @@ below from "a process on this machine" to "anything on the network".
 
 ### Where they live
 
+Step 20 moved half of this into Vault. Read the split first, or the table below is misleading:
+**the two Spring Boot services get their credentials from Vault; the infrastructure containers do
+not.** Full detail in [`docs/Vault.md`](Vault.md).
+
 | Location | Contains | Tracked |
 | --- | --- | --- |
-| `docker/compose/.env` | Every credential the stack uses | **No** — git-ignored |
+| **Vault** (`secret/`, `database/`) | Every credential the two **services** use: Oracle, Redis, MinIO, Flyway, and a per-lease PostgreSQL user | n/a — not a file |
+| `docker/compose/.vault-keys.json` | Vault's own unseal keys and root token | **No** — git-ignored, `0600` |
+| `docker/compose/.env.vault.<service>` | Per-service AppRole `role-id` / `secret-id` | **No** — generated |
+| `docker/compose/.env` | What is left: **infrastructure bootstrap** credentials — the PostgreSQL superuser, `ORACLE_SYS_PASSWORD`, Keycloak, Grafana, MinIO root, the monitoring accounts | **No** — git-ignored |
 | `docker/compose/.env.example` | The same keys with obvious placeholder values | Yes, and must never contain a real credential |
 | `infrastructure/kong/kong.yml` | A **public** key only | Yes |
 | `infrastructure/keycloak/realm/*.json` | Lab user passwords, the pinned key pair | Yes — lab-only, and the reason the realm must not be reused |
@@ -387,11 +394,13 @@ Stated plainly, because a reader who copies this needs to know exactly which lin
 | **Consul ACLs disabled**, `default_policy = allow` | A single-node loopback lab gains little, and ACLs would obscure the registration mechanics step 08 teaches | Anyone reaching :8500 owns discovery and configuration |
 | **Toxiproxy API unauthenticated** | It is a fault-injection tool that must be trivially reachable to be used | Anyone reaching :8474 can break every dependency |
 | **Grafana anonymous viewing** | Being asked to log in to look at a graph teaches nothing | Dashboards and metrics readable by anyone |
-| **Credentials in a plain `.env`** | Obvious placeholders, git-ignored, safe only because of the loopback binding | No rotation, no audit, no scoping |
+| **Infrastructure credentials still in a plain `.env`** | The services moved to Vault in step 20; Keycloak, Grafana, Redis, MinIO, PostgreSQL and Oracle read their bootstrap credentials from the environment at container start and **cannot ask Vault for anything**. Closing this needs Vault Agent rendering an env file per container | No rotation, no audit, no scoping — for those components only |
+| **Vault's own keys on disk** | `.vault-keys.json` holds all five unseal shares and the root token together, git-ignored and `0600`. The chain of trust still ends in a file; Vault shrank the problem rather than removing it | One file compromises every secret. Real deployments split the shares between key holders or use KMS auto-unseal |
+| **AppRole `secret_id_ttl=0`** | The service credential never expires, so the stack survives unattended | A leaked secret-id is valid forever. Real deployments issue short-lived single-use ones through a broker |
 | **Password grant on a public client** | A token is one command away | The password reaches the client |
 | **No data at rest encryption** | Docker volumes on a developer machine | Everything readable from the host filesystem |
 | **No backups, no restore test** | Data is expendable | No recovery |
-| **No audit log** | — | No record of who did what |
+| **No audit log except Vault's** | Step 20 enabled a Vault audit device, shipped to Loki — so every *secret* access is recorded, including refusals. Nothing else in the stack has an equivalent | No record of who did what, outside secret access |
 | **No rate limit beyond Kong's per-route counter** | `policy: local` on a single node | A cluster would need `policy: redis`, or each node allows the full quota |
 | **`fault_tolerant: true` on the rate limiter** | An outage of the limiter must not become an outage of the API | A limiter failure silently removes the limit |
 
@@ -402,8 +411,11 @@ Stated plainly, because a reader who copies this needs to know exactly which lin
    `BIND_HOST=127.0.0.1` for :8474. Point the datastore addresses in `.env` at the real service names.
 3. **`SERVICE_PROFILE=prod`**, which removes the chaos endpoints, Swagger UI and caller-visible stack
    traces in one move.
-4. **Rotate every credential** in `.env` and move them to a secret manager. They are placeholders and
-   are documented as such.
+4. **Rotate every credential still in `.env`.** The services already read theirs from Vault (step 20);
+   what remains is the infrastructure bootstrap set, which needs **Vault Agent** rendering a per-container
+   env file — Keycloak, Grafana, Redis, MinIO, PostgreSQL and Oracle cannot ask Vault themselves. While
+   there: split the unseal keys out of `.vault-keys.json`, give the AppRole secret-ids a TTL, and revoke
+   the root token. See [`docs/Vault.md` §11](Vault.md#11-what-this-step-did-not-do).
 5. **Enable Consul ACLs** with `default_policy = deny`, and issue per-service tokens.
 6. **Grafana anonymous off**; real accounts, or SSO against the same Keycloak.
 7. **Re-introduce network segmentation**, or replace it with a mesh that enforces mTLS and policy.

@@ -36,7 +36,42 @@ spring:
     # standalone run); when present, KV values take precedence over this file.
     # The Consul host/port are read from spring.cloud.consul below. See
     # docs/Consul.md.
-    import: "optional:consul:"
+    #
+    # Vault is imported alongside it, and the division is absolute: Consul KV
+    # holds configuration, Vault holds credentials, nothing is in both. A value
+    # duplicated across two stores has two sources of truth and will eventually
+    # disagree, and the copy that wins is whichever one nobody checked.
+    #
+    # Both optional, for the same reason: a test slice or a bare `mvn
+    # spring-boot:run` has neither, and must still start. What that costs is
+    # stated plainly in docs/Vault.md - when Vault is absent the ${VAR:default}
+    # fallbacks below take over, and those defaults are the working lab
+    # credentials, so a service that silently failed to reach Vault looks
+    # exactly like one correctly wired to it. ./scripts/vault.sh whoami is how
+    # you tell the two apart.
+    #
+    # Three imports, and the third one's shape is not cosmetic.
+    #
+    #   vault://    the KV v2 static secrets, whose keys are already Spring
+    #               property names
+    #   vault://database/creds/order-service?prefix=spring.datasource.
+    #               one dynamic PostgreSQL credential, minted per lease
+    #
+    # The prefix is load-bearing. Vault's database engine answers with two keys
+    # called `username` and `password`, and without a prefix they arrive as
+    # ROOT-level properties of exactly those names - a trap on two counts. They
+    # never reach spring.datasource.*, and `username` collides with the USERNAME
+    # variable Windows sets on every machine. systemEnvironment outranks every
+    # config-data import, so on a developer's laptop the datasource would try to
+    # log in as the person using it. The prefix puts both keys where they belong
+    # and leaves nothing at the root to collide with.
+    #
+    # This is NOT spring.cloud.vault.database.username-property. That property
+    # pair belongs to the older bootstrap-context mechanism and does nothing
+    # under the config-data API used here - the request is never made, and the
+    # datasource silently keeps the static fallback below. The difference is
+    # visible only in /actuator/env, which is where it was confirmed.
+    import: "optional:consul:,optional:vault://,optional:vault://database/creds/order-service?prefix=spring.datasource."
 
   datasource:
     url: jdbc:postgresql://${ORDER_DB_HOST:localhost}:${ORDER_DB_PORT:5432}/${ORDER_DB_NAME:orderdb}
@@ -49,6 +84,16 @@ spring:
       # Fail fast rather than piling up threads behind an unreachable database.
       connection-timeout: 3000
       validation-timeout: 2000
+      # 15 minutes, and it MUST stay below the Vault lease TTL (1h, set by
+      # DB_DEFAULT_TTL in scripts/vault.sh).
+      #
+      # A pooled connection authenticated once and is not re-checked afterwards,
+      # so if the credential outlived the pool's recycling interval the pool
+      # would keep handing out connections belonging to a PostgreSQL user that
+      # no longer exists - and the failure would appear as a slow trickle of
+      # errors minutes after the expiry, rather than at the moment it happened.
+      # Recycling well inside the lease means a dead credential is discovered by
+      # the pool, on its own schedule, instead of by a user.
       max-lifetime: 900000
 
   jpa:
@@ -73,6 +118,18 @@ spring:
     # No baselining: an existing database without a Flyway history is a
     # situation that needs a human, not a silent assumption.
     baseline-on-migrate: false
+    # Migrations authenticate as the OWNING role, not as the dynamic credential
+    # the runtime pool uses. Vault supplies these from KV v2 (static), while
+    # spring.datasource gets a generated user with an hour's lease.
+    #
+    # This split is not tidiness. Migrations run DDL, and every object created
+    # acquires an owner. A dynamic user would own the schema and then be dropped
+    # when its lease ended, and PostgreSQL would refuse the DROP - or, with
+    # DROP OWNED in the revocation statement, take the schema with it. Either
+    # way the failure appears an hour after the deployment that caused it.
+    url: jdbc:postgresql://${ORDER_DB_HOST:localhost}:${ORDER_DB_PORT:5432}/${ORDER_DB_NAME:orderdb}
+    user: ${ORDER_DB_USER:order_user}
+    password: ${ORDER_DB_PASSWORD:localdev_order_pw}
 
   data:
     redis:
@@ -135,6 +192,74 @@ spring:
         data-key: data
         watch:
           enabled: true
+
+    # -----------------------------------------------------------------------
+    # Vault - credentials. Consul above holds everything that is not one.
+    # -----------------------------------------------------------------------
+    vault:
+      # Off unless something switches it on, and the container does
+      # (VAULT_ENABLED in docker-compose.services.yml). A developer running this
+      # class from an IDE has no Vault and no AppRole credentials, and must
+      # still get a startup - so the default is the arrangement that needs
+      # nothing, and Docker opts in.
+      enabled: ${VAULT_ENABLED:false}
+      uri: ${VAULT_ADDR:http://localhost:8200}
+
+      # AppRole, not a token. A token in the environment is a credential with no
+      # identity attached: it cannot be traced to a service in the audit log and
+      # cannot be revoked for one service without revoking it for all of them.
+      # role-id identifies WHO, secret-id proves it, and the pair maps to
+      # exactly the policy in infrastructure/vault/policies/order-service.hcl.
+      authentication: APPROLE
+      app-role:
+        # Written by ./scripts/vault.sh seed into
+        # docker/compose/.env.vault.order-service, which compose loads as an
+        # env_file. Empty here, because there is no sane default for an identity.
+        role-id: ${VAULT_ROLE_ID:}
+        secret-id: ${VAULT_SECRET_ID:}
+
+      # Static secrets. Read in this order, later overriding earlier:
+      #   secret/application      shared - the Redis password
+      #   secret/order-service    this service - Flyway and MinIO credentials
+      #
+      # The KEYS IN VAULT ARE SPRING PROPERTY NAMES. There is no mapping layer,
+      # so `spring.data.redis.password` in Vault becomes exactly that property.
+      # A typo produces a silent fallback to the default below it, not an error.
+      kv:
+        enabled: true
+        backend: secret
+        default-context: application
+        application-name: order-service
+
+      # There is deliberately no `database:` block here.
+      #
+      # The dynamic PostgreSQL credential is requested through the
+      # spring.config.import line above instead, because the config-data API
+      # ignores this section - see the note there. Configuring it in both places
+      # would look like belt and braces and would in fact be one working
+      # mechanism next to one inert one, which is worse than either.
+      #
+      # Only the runtime pool uses the dynamic credential. Flyway keeps a static
+      # one - see spring.flyway above for why that is not optional.
+
+      config:
+        lifecycle:
+          # Renew the lease before it expires, rather than letting the
+          # credential die and rediscovering that at the next connection.
+          # Without this the service works for an hour and then degrades for
+          # reasons that have nothing to do with anything that changed.
+          enabled: true
+
+      # Vault unreachable at startup is fatal, unlike Consul above.
+      #
+      # Deliberately asymmetric. Consul holds configuration and there are
+      # sensible defaults compiled in; Vault holds the database credential, and
+      # a service that starts without one has nothing to fall back on but the
+      # placeholder in this file - which would connect, work, and hide the fact
+      # that Vault was never consulted. Failing loudly is the only honest
+      # option. See "Prove it came from Vault" in docs/Vault.md.
+      fail-fast: true
+
     openfeign:
       client:
         config:

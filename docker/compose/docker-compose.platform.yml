@@ -83,6 +83,82 @@ services:
     restart: "no"
 
   # -------------------------------------------------------------------------
+  # Vault - secret store.
+  #
+  # Sits beside Consul on purpose. The two divide one job: Consul KV holds
+  # configuration, Vault holds secrets, and nothing is allowed to live in both.
+  # The dividing line, stated once so it can be applied without re-deciding:
+  # a value that could appear in a screenshot is configuration.
+  #
+  # Runs a real server against a real config file, NOT `-dev`. It therefore
+  # boots SEALED - every restart, including the one Docker performs after a
+  # machine reboot - and serves nothing until unsealed. ./scripts/vault.sh
+  # unseal does that and ./scripts/infra.sh up calls it before the services
+  # start. See infrastructure/vault/config/vault.hcl for why that cost is
+  # accepted rather than engineered away with dev mode.
+  # -------------------------------------------------------------------------
+  vault:
+    image: ${VAULT_IMAGE}
+    container_name: lab-vault
+    restart: unless-stopped
+    # `server`, and deliberately nothing else. The image's default command runs
+    # a dev-mode server, so this line is what makes this a real Vault.
+    #
+    # Do NOT add -config here. The image entrypoint already appends
+    # -config=/vault/config when the first argument is `server`, so passing the
+    # file explicitly loads the directory AND the file - the same listener
+    # twice - and Vault dies with "address already in use" on its own port,
+    # which reads like a host port clash and is not one.
+    command: ["server"]
+    environment:
+      # For the `vault` CLI *inside* this container - the healthcheck below and
+      # every exec ./scripts/vault.sh performs. Loopback, not the compose name:
+      # this is the process talking to itself.
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add:
+      # Vault locks its memory so secrets cannot be paged to disk by the kernel.
+      # Without this capability the process refuses to start rather than run
+      # with that guarantee quietly missing - which is the correct choice, and
+      # the reason this line is not optional.
+      - IPC_LOCK
+    ports:
+      - "${BIND_HOST}:${VAULT_PORT}:8200"
+    volumes:
+      - vault-data:/vault/file
+      # Audit log, on its own volume rather than the services' lab-logs. Two
+      # reasons: Vault runs as a different uid and could not write into a
+      # directory owned by the services' user, and its audit records have a
+      # different schema - mixing them into the pipeline that parses service
+      # JSON produces records where every extracted label is empty.
+      - vault-logs:/vault/logs
+      - ../../infrastructure/vault/config/vault.hcl:/vault/config/vault.hcl:ro
+      - ../../infrastructure/vault/policies:/vault/policies:ro
+    networks:
+      - lab-net
+    healthcheck:
+      # `vault status` exits 0 only when Vault is initialised AND unsealed.
+      # Exit 2 means sealed, exit 1 means unreachable, and both leave this
+      # container unhealthy - which is precisely the intent. Anything that
+      # depends on Vault having secrets to give must wait for unsealed, not for
+      # the process having started.
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Short: the process itself starts in under a second. The wait that
+      # matters is the unseal, and that is a human or a script, not a boot.
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          # 512M, not the 256M this was first given. mlock reserves its address
+          # space up front, so Vault is killed during startup at 256M - and
+          # because that happens before it opens its log, the container simply
+          # exits 137 with an empty log and no stated reason. `docker inspect
+          # --format '{{.State.OOMKilled}}'` is the only place the cause appears.
+          memory: 512M
+
+  # -------------------------------------------------------------------------
   # Keycloak - OIDC identity provider.
   #
   # Runs in production mode (`start`), not `start-dev`: persistent PostgreSQL
@@ -234,3 +310,13 @@ services:
 volumes:
   consul-data:
     name: lab-consul-data
+  # Vault's storage backend. Deleting this volume destroys every secret AND the
+  # unseal keys' ability to open anything - the keys in docker/compose/.vault-keys.json
+  # are meaningless without the data they were derived against. `infra.sh destroy`
+  # removes both together for that reason.
+  vault-data:
+    name: lab-vault-data
+  # Audit records, tailed into Loki by Promtail. Separate from lab-logs; see the
+  # comment on the vault service above.
+  vault-logs:
+    name: lab-vault-logs

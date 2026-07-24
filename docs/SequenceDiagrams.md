@@ -447,11 +447,12 @@ sequenceDiagram
     participant D as Docker
     participant S as Service
     participant CO as Consul
+    participant VA as Vault
     participant DB as PostgreSQL / Oracle
     participant KC as Keycloak
     participant KA as Kafka
 
-    D->>S: start (depends_on satisfied: datastores healthy, one-shots exited 0)
+    D->>S: start (depends_on satisfied: datastores healthy, Vault UNSEALED, one-shots exited 0)
     S->>CO: GET config/application/data
     alt Consul answers
         CO-->>S: YAML overrides
@@ -459,7 +460,18 @@ sequenceDiagram
         Note over S: optional: import + fail-fast false → bundled application.yml
     end
 
-    S->>DB: Flyway migrate (baseline-on-migrate false)
+    S->>VA: POST auth/approle/login (role-id + secret-id)
+    VA-->>S: client token
+    S->>VA: GET secret/data/application, secret/data/<service>
+    VA-->>S: static credentials, keyed by Spring property name
+    opt Order Service only
+        S->>VA: GET database/creds/order-service
+        VA->>DB: CREATE ROLE "v-approle-order-se-…" VALID UNTIL …
+        VA-->>S: username + password, 1h lease
+    end
+    Note over S,VA: fail-fast TRUE — unlike Consul. A missing credential must stop the boot,<br/>because the fallback in application.yml would connect and hide it
+
+    S->>DB: Flyway migrate as the OWNING role, not the leased one
     S->>DB: Hibernate validate (ddl-auto validate)
     S->>KA: subscribe, join consumer group
     S->>CO: register hostname = SERVICE_HOSTNAME, health check /actuator/health every 10 s

@@ -19,6 +19,11 @@
 #
 #   ./scripts/load.sh  load      sustained high load, from inside the network
 #   ./scripts/chaos.sh slow ...  latency, failures and resets on any hop
+#   ./scripts/vault.sh status    the secret store: seal state, leases, audit
+#
+# `up` unseals and seeds Vault before starting anything that needs a secret
+# from it. Vault runs a real server, not dev mode, so it boots sealed every
+# time - see scripts/vault.sh and docs/Vault.md.
 #
 # The compose files are combined through COMPOSE_FILE in docker/compose/.env,
 # which this script creates from .env.example on first run.
@@ -151,11 +156,44 @@ $(container_status)
 EOF
 }
 
+# Vault, before anything that needs a secret from it.
+#
+# This exists because Vault does not run in dev mode. A real Vault boots SEALED
+# on every start, so there is no arrangement of depends_on that produces a
+# usable secret store on its own - something has to present the unseal keys, and
+# that something cannot be a container in the same compose file, because it
+# would need the keys the unseal is protecting.
+#
+# So: start Vault alone, unseal and seed it, then bring up everything else. The
+# services declare `vault: condition: service_healthy`, and Vault's healthcheck
+# passes only when unsealed - so this ordering is enforced by compose too, not
+# merely by the order of the lines here.
+bootstrap_vault() {
+  echo "Bringing up Vault and unsealing it..."
+  compose up -d vault
+
+  # The container reports healthy only once unsealed, which is exactly what we
+  # are about to do - so this waits on the process being up, not on health.
+  local waited=0
+  until docker exec lab-vault vault status >/dev/null 2>&1 \
+     || [ "$(docker inspect -f '{{.State.Running}}' lab-vault 2>/dev/null || echo false)" = "true" ]; do
+    [ "${waited}" -ge 60 ] && die "Vault did not start within 60s. Check: ./scripts/infra.sh logs vault"
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  "${SCRIPT_DIR}/vault.sh" bootstrap
+  echo
+}
+
 cmd_up() {
   echo "Starting the full stack: infrastructure, services, observability, simulation."
   echo "First run pulls several GB of images, compiles both services and initialises"
   echo "Oracle; expect ten minutes or so. Subsequent runs are much faster."
   echo
+
+  bootstrap_vault
+
   # --build, so a source change is picked up by `up` rather than silently
   # running the previous image. The Docker layer cache makes this cheap when
   # nothing changed, and a stale service image is a debugging session that
@@ -209,6 +247,7 @@ Endpoints
   Kong manager          http://${host}:${KONG_MANAGER_PORT:-8002}
   Keycloak              http://${host}:${KEYCLOAK_PORT:-8080}
   Consul UI             http://${host}:${CONSUL_PORT:-8500}
+  Vault UI              http://${host}:${VAULT_PORT:-8200}   (token: jq -r .root_token docker/compose/.vault-keys.json)
   Kafka UI              http://${host}:${KAFKA_UI_PORT:-8090}
   MinIO console         http://${host}:${MINIO_CONSOLE_PORT:-9001}
 
@@ -244,11 +283,16 @@ EOF
 
 cmd_destroy() {
   echo "This deletes every volume in the stack: databases, broker log, object storage."
+  echo "It also destroys Vault's storage, which makes the unseal keys in"
+  echo "docker/compose/.vault-keys.json meaningless - they open that data and"
+  echo "nothing else. They are removed with it, so the next 'up' initialises a"
+  echo "fresh Vault instead of finding keys that fit no lock."
   printf "Type 'destroy' to confirm: "
   read -r answer
   [ "${answer}" = "destroy" ] || { echo "Aborted."; return 1; }
   compose down --volumes --remove-orphans
-  echo "Stack and volumes removed."
+  rm -f "${COMPOSE_DIR}/.vault-keys.json" "${COMPOSE_DIR}"/.env.vault.*
+  echo "Stack, volumes and Vault keys removed."
 }
 
 main() {
@@ -257,7 +301,7 @@ main() {
 
   case "${cmd}" in
     help|-h|--help)
-      sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       return 0
       ;;
     urls)

@@ -50,7 +50,7 @@ suppress the twenty application warnings it causes.
 
 ## 3. The alert matrix
 
-33 Prometheus rules. Generated from the rule files under
+38 Prometheus rules. Generated from the rule files under
 [`infrastructure/prometheus/rules/`](../infrastructure/prometheus/rules/) — if the two ever disagree,
 the rule files are right.
 
@@ -66,6 +66,9 @@ the rule files are right.
 | [`HighHttpFaultRate`](#highhttpfaultrate) | application | 5m | >5% of requests are 5xx | HTTP dashboard → endpoint → trace |
 | [`GrpcHighFaultRate`](#grpchighfaultrate) | application | 5m | >1% of RPCs fault | gRPC status distribution |
 | [`OrdersAcceptedButNotSettled`](#ordersacceptedbutnotsettled) | application | 10m | Accept rate exceeds settle rate | Consumer lag, then outbox |
+| [`VaultSealed`](#vaultsealed) | infrastructure | 1m | `max(vault_core_unsealed) == 0` | `./scripts/vault.sh unseal` |
+| [`VaultDown`](#vaultsealed) | infrastructure | 1m | The Vault scrape target is down | `./scripts/infra.sh logs vault` |
+| [`VaultAuditDeviceFailing`](#vaultauditdevicefailing) | infrastructure | 2m | Audit log writes are failing | Check disk — Vault refuses **everything** when audit fails |
 
 ### Warning — a ticket today
 
@@ -93,6 +96,8 @@ the rule files are right.
 | [`RedisMemoryHigh`](#redismemoryhigh) | cache | 10m | >90% of `maxmemory` |
 | [`KafkaConsumerLagHigh`](#kafkaconsumerlaghigh) | messaging | 10m | >1000 messages behind |
 | [`KafkaConsumerGroupEmpty`](#kafkaconsumergroupempty) | messaging | 5m | A group has no members |
+| [`VaultLeaseCountCollapsed`](#vaultleasecountcollapsed) | infrastructure | 5m | No outstanding leases while services are up |
+| [`VaultPermissionDenied`](#vaultpermissiondenied) | infrastructure | 5m | Sustained 403s from Vault |
 
 ### Information — context only
 
@@ -210,6 +215,42 @@ first" that stops an alert from being a dead end.
 1. `docker compose ps` / is the JVM process alive? A crash reports nothing at all.
 2. Its logs — a startup failure or an OOM kill both look identical from outside.
 3. If it restarted by itself, check [`JvmHeapPressure`](#jvmheappressure) history for the minutes before.
+
+#### VaultSealed
+
+**Read this one differently from every other alert in the file.** Nothing is broken *yet*.
+
+1. Confirm: `./scripts/vault.sh status`. `Sealed  true`.
+2. **Do not go looking for a symptom.** There is none. Every running service keeps serving from the
+   secrets and connections it already holds — latency flat, error rate flat, health green. The stack
+   breaks at the next lease renewal or the next service restart, which may be an hour away.
+3. `./scripts/vault.sh unseal`.
+4. Confirm with `./scripts/vault.sh whoami` — the Order Service should be connected to PostgreSQL as
+   a `v-approle-order-se-…` user.
+
+If the keys file is gone, this Vault cannot be opened. See [Vault.md §4](Vault.md#4-the-bootstrap-problem).
+
+#### VaultLeaseCountCollapsed
+1. `./scripts/vault.sh leases` — empty confirms it.
+2. The Order Service's dynamic PostgreSQL credential was revoked or expired. Open connections still
+   work; the next one Hikari opens will not.
+3. `docker restart lab-order-service` re-leases at startup.
+4. If it keeps happening, check that `spring.cloud.vault.config.lifecycle.enabled` is still `true` —
+   without renewal the credential dies at its 1h TTL every time.
+
+#### VaultPermissionDenied
+1. `./scripts/vault.sh audit 50` — the denied path is named in the log.
+2. Most common cause after a config change: a new `SPRING_PROFILES_ACTIVE`. Spring Cloud Vault also
+   reads `secret/data/<service>/<profile>`, and Vault answers an ungranted path with **403, not 404** —
+   so a missing grant and a missing secret are indistinguishable.
+3. `./scripts/vault.sh deny` confirms the boundary still behaves as designed.
+
+#### VaultAuditDeviceFailing
+1. **This is a total outage of the secret store, not a degradation.** Vault refuses *every* request
+   once all audit devices are failing — deliberately, on the grounds that an unauditable secret store
+   is worse than an unavailable one.
+2. The cause is almost always disk: `docker exec lab-vault df -h /vault/logs`, then `docker system prune`.
+3. It is startling the first time because the symptom is Vault being down and the cause is a log file.
 
 #### ExporterDown
 1. Which exporter, and what alerts depend on it — **those alerts cannot fire while this is true.**

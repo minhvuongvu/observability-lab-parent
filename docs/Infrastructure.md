@@ -24,6 +24,7 @@ what changed and what it cost.
 | Kong | `kong:3.9.3` | 8000 / 8001 / 8002 | API gateway, DB-less |
 | Keycloak | `quay.io/keycloak/keycloak:26.7.0` | 8080 | OIDC identity provider |
 | Consul | `hashicorp/consul:1.22.7` | 8500 | Service registry and KV store |
+| Vault | `hashicorp/vault:1.20.4` | 8200 | Secret store. Real server, **not** dev mode — boots sealed |
 | PostgreSQL | `postgres:17-alpine` | 5432 | Order Service database + Keycloak database |
 | Oracle | `gvenzl/oracle-free:23-slim-faststart` | 1521 | Inventory Service database |
 | Kafka | `apache/kafka:4.2.1` | 29092 | Event backbone, KRaft mode |
@@ -101,7 +102,7 @@ flowchart TB
         SVC[order-service<br/>inventory-service]
         TOX[toxiproxy]
         DATA[(postgres · oracle · kafka<br/>redis · minio)]
-        PLAT[consul · keycloak]
+        PLAT[consul · vault · keycloak]
         OBS[prometheus · loki · tempo<br/>grafana · pyroscope · …]
         K6[k6]
 
@@ -242,7 +243,7 @@ works from `docker/compose/`:
 | File | Contents |
 | --- | --- |
 | `docker-compose.yml` | Core data plane: PostgreSQL, Oracle, Kafka, Kafka UI, Redis, MinIO. Declares `lab-net` |
-| `docker-compose.platform.yml` | Edge and control plane: Consul, Keycloak, Kong, Nginx |
+| `docker-compose.platform.yml` | Edge and control plane: Consul, **Vault**, Keycloak, Kong, Nginx |
 | `docker-compose.observability.yml` | Logs, metrics, traces, profiles, alerting, exporters |
 | `docker-compose.services.yml` | The two Spring Boot services. Declares the `lab-logs` volume |
 | `docker-compose.simulation.yml` | Toxiproxy and k6 |
@@ -311,6 +312,7 @@ PostgreSQL answers queries; the topic bootstrap does not run until the broker se
 | redis | `redis-cli ping` | ~5 s |
 | minio | `mc ready local` | ~10 s |
 | consul | `consul members` | ~10 s |
+| vault | `vault status` — passes only when **unsealed**, not merely running | ~5 s + the unseal |
 | keycloak | bash socket redirect to `/health/ready` on port 9000 | ~60–90 s first run |
 | kong | `kong health` | ~15 s |
 | nginx | wget on `/healthz` | ~5 s |
@@ -331,6 +333,8 @@ by `KC_HEALTH_ENABLED`.
 | `lab-redis-data` | AOF and RDB snapshots | yes |
 | `lab-minio-data` | Invoice objects and versions | yes |
 | `lab-consul-data` | Registry state and KV | yes |
+| `lab-vault-data` | Every secret, and the barrier that encrypts them | yes — and `.vault-keys.json` goes with it, since those keys open this data and nothing else |
+| `lab-vault-logs` | The audit log, tailed into Loki | yes |
 
 `down` keeps all of it; `destroy` deletes all of it and prompts for confirmation first. Deleting the
 volumes is also how init scripts are made to run again.
@@ -389,6 +393,7 @@ This step brings the components up. It does not configure what they do:
 | Step 07 | Keycloak realm, clients, roles, users; the JWT plugin starts enforcing |
 | Step 08 | Consul service registration and KV configuration |
 | Step 10–13 | The entire observability stack |
+| Step 20 | Vault: the services' credentials moved out of `.env` into a sealed, audited store, with dynamic PostgreSQL users. See [Vault.md](Vault.md) |
 | — | Nothing. Step 17 completed the failure-simulation surface: network faults in [Simulation.md](Simulation.md), in-process faults in [FailureSimulation.md](FailureSimulation.md). Step 18 completed the reference layer — [Deployment.md](Deployment.md), [Runbook.md](Runbook.md), [Troubleshooting.md](Troubleshooting.md), [Performance.md](Performance.md), [Security.md](Security.md), [SequenceDiagrams.md](SequenceDiagrams.md), [InfrastructureDiagram.md](InfrastructureDiagram.md) |
 
 ---

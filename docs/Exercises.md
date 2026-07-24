@@ -14,7 +14,7 @@ answer is a number, a query or a diagnosis — something you can check.
 > ./scripts/chaos.sh reset && ./scripts/infra.sh health
 > ```
 
-**Prerequisite:** a converged stack. If `./scripts/infra.sh health` does not show 35 containers, start
+**Prerequisite:** a converged stack. If `./scripts/infra.sh health` does not show 36 containers, start
 with [GETTING_STARTED.md](../GETTING_STARTED.md).
 
 ---
@@ -217,6 +217,46 @@ Run 4.1, then heal it and watch.
 
 *Checkable: a metric, a duration, a PromQL expression.*
 
+### 4.6 — The fault with no symptom
+
+```bash
+./scripts/chaos.sh vault seal
+```
+
+Then wait, and keep using the system.
+
+**a)** Place an order. Does it succeed? Why does sealing the secret store not break a running service?
+**b)** Which *single* metric moves within one scrape interval? Name it and its value.
+**c)** `./scripts/infra.sh health` — which container is unhealthy, and what exactly is its healthcheck
+testing that makes it the only one to notice?
+**d)** Now `docker restart lab-order-service`. Quote the error. Why did this fault need a restart to
+become visible, and what does that imply about alerting on consequences instead of on state?
+**e)** Heal it and confirm the Order Service is back on a Vault-issued credential.
+
+*Checkable: a status code, a metric name and value, a container name, an exception message, a username.*
+
+<details><summary>Hint</summary>
+
+`./scripts/vault.sh status`, `./scripts/vault.sh whoami`, and the **Vault — Secret Store** dashboard.
+</details>
+
+### 4.7 — Whose credential is it anyway?
+
+```bash
+./scripts/vault.sh whoami
+```
+
+**a)** What username is the Order Service connected to PostgreSQL as? Who created it, and when will it
+stop existing?
+**b)** Flyway uses a *different*, static credential. Find it, and explain what would break if migrations
+ran as the dynamic user instead.
+**c)** `./scripts/vault.sh revoke`, then immediately place an order. Does it work? Explain, in terms of
+connection pooling, why the answer is what it is.
+**d)** Force the failure to surface without waiting 15 minutes. *(One `chaos.sh` command.)*
+**e)** `./scripts/vault.sh deny` — what does it prove, and where is the proof recorded?
+
+*Checkable: two usernames, a one-sentence failure mode, a yes/no with a reason, one command, a log path.*
+
 ---
 
 ## Level 5 — Capacity
@@ -313,7 +353,7 @@ Stop here if you have not tried.
 <details>
 <summary><b>Level 1</b></summary>
 
-**1.1** (a) **35** — 32 running plus 3 exited. 41 are *declared*; 5 sit behind the `search` profile and
+**1.1** (a) **36** — 33 running plus 3 exited. 42 are *declared*; 5 sit behind the `search` profile and
 1 behind `load`. (b) **9** have no healthcheck; they are watched by Prometheus instead
 (`up{job="fluent-bit"}` and friends). `fluent-bit` has none deliberately: `fluent-bit --version` would
 pass while the process shipped nothing, reporting healthy through a total outage. (c) `kafka-init`,
@@ -421,6 +461,29 @@ is a 5 m window and still contains the slow requests. Measured 9172 ms at +45 s,
 histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{service="order-service"}[1m])))
 ```
 (d) A rollback triggered by arithmetic rather than by a fault.
+
+**4.6** (a) **Yes, 201.** The service already holds its Vault-issued database credential and an open
+Hikari pool; sealing Vault removes the ability to fetch *new* secrets, not the ones already fetched.
+(b) `max(vault_core_unsealed)` → **0**. Note `max()` — Vault publishes the gauge twice and the
+`cluster=""` series is permanently 0, so the naive form fires on a healthy Vault. (c) `lab-vault`.
+Its healthcheck is `vault status`, which exits non-zero when **sealed**, not merely when the process is
+gone — so it is testing a state no other container's check would notice. (d)
+`VaultLoginException: Cannot login using AppRole: Vault is sealed`, in a restart loop. The fault only
+became visible when something needed a secret it did not already hold; alerting on the *consequence*
+would have fired an hour after the cause, on a service that looked like it had a database problem.
+(e) `./scripts/chaos.sh vault unseal`, then `./scripts/vault.sh whoami` shows a fresh
+`v-approle-order-se-…`.
+
+**4.7** (a) `v-approle-order-se-<random>-<epoch>`. **Vault created it** on the Order Service's behalf
+when the service authenticated; it is dropped when the 1 h lease ends and is not renewed. (b)
+`spring.flyway.user` / `spring.flyway.password` from `secret/order-service` — the **owning** role.
+Migrations create objects that acquire an owner, so a leased user would own the schema and then be
+dropped, taking it with it. (c) **Yes, it still works.** The pool's connections were authenticated once
+and are not re-checked; revocation drops the PostgreSQL *role* but does not close established sessions.
+(d) `./scripts/chaos.sh app db order 30 20` — demanding more connections than the pool holds forces new
+ones to be opened, and those fail immediately. (e) It proves the policy boundary: order-service can read
+its own KV path and is **denied** inventory-service's. The proof is in the Vault audit log —
+`./scripts/vault.sh audit`, or in Loki under `{job="vault-audit"}`.
 </details>
 
 <details>
@@ -489,7 +552,7 @@ Deciding which to change is a capacity question, not a documentation one.
 | --- | --- |
 | [Debugging.md](Debugging.md) | The worked method behind Level 3 and 4 |
 | [Simulation.md](Simulation.md) | Network faults and load, signal by signal |
-| [FailureSimulation.md](FailureSimulation.md) | The 13 in-process scenarios, expectations written first |
+| [FailureSimulation.md](FailureSimulation.md) | 13 in-process scenarios plus 2 Vault ones, expectations written first |
 | [Performance.md](Performance.md) | The measured ceiling behind Level 5 |
 | [Operations.md](Operations.md) | Running the stack the exercises need |
 | [GETTING_STARTED.md](../GETTING_STARTED.md) | If the stack is not up |

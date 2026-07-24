@@ -37,7 +37,15 @@ spring:
     # standalone run); when present, KV values take precedence over this file.
     # The Consul host/port are read from spring.cloud.consul below. See
     # docs/Consul.md.
-    import: "optional:consul:"
+    #
+    # Vault is imported alongside it, and the division is absolute: Consul KV
+    # holds configuration, Vault holds credentials, nothing is in both.
+    #
+    # Both optional, so a test slice or a standalone run still starts. What that
+    # costs is stated in docs/Vault.md: the ${VAR:default} fallbacks below are
+    # the working lab credentials, so a service that failed to reach Vault looks
+    # exactly like one correctly wired to it.
+    import: "optional:consul:,optional:vault://"
 
   datasource:
     url: jdbc:oracle:thin:@//${ORACLE_DB_HOST:localhost}:${ORACLE_DB_PORT:1521}/${ORACLE_PDB:FREEPDB1}
@@ -138,6 +146,52 @@ spring:
         data-key: data
         watch:
           enabled: true
+
+    # -----------------------------------------------------------------------
+    # Vault - credentials. Consul above holds everything that is not one.
+    # -----------------------------------------------------------------------
+    vault:
+      # Off unless switched on, and the container does (VAULT_ENABLED in
+      # docker-compose.services.yml). An IDE run has no AppRole credentials and
+      # must still start, so the default is the arrangement needing nothing.
+      enabled: ${VAULT_ENABLED:false}
+      uri: ${VAULT_ADDR:http://localhost:8200}
+
+      # AppRole, not a token: role-id identifies WHO, secret-id proves it, and
+      # the pair maps to exactly the policy in
+      # infrastructure/vault/policies/inventory-service.hcl - which grants this
+      # service its own KV path and nothing else. ./scripts/vault.sh deny
+      # demonstrates the boundary by failing on purpose.
+      authentication: APPROLE
+      app-role:
+        role-id: ${VAULT_ROLE_ID:}
+        secret-id: ${VAULT_SECRET_ID:}
+
+      # Static secrets only. Read in this order, later overriding earlier:
+      #   secret/application         shared - the Redis password
+      #   secret/inventory-service   this service - the Oracle credentials
+      #
+      # No `database:` block, and its absence is the point. The Vault binary
+      # ships database plugins for PostgreSQL and several others but NOT for
+      # Oracle: that plugin is distributed separately, needs the Oracle Instant
+      # Client libraries present and must be registered in the plugin catalogue.
+      #
+      # So this service reads a static credential where the Order Service is
+      # handed a generated one. A stated limitation of the lab, not an
+      # oversight - and the reason docs/Vault.md does not claim the stack runs
+      # entirely on dynamic credentials.
+      kv:
+        enabled: true
+        backend: secret
+        default-context: application
+        application-name: inventory-service
+
+      # Fatal if Vault is unreachable, unlike Consul above. Consul holds
+      # configuration with sensible compiled-in defaults; Vault holds the
+      # database password, and a service that starts without one falls back to
+      # the placeholder in this file - which connects, works, and conceals that
+      # Vault was never reached.
+      fail-fast: true
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}

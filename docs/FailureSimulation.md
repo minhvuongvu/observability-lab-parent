@@ -489,6 +489,100 @@ That is the only claim worth testing.
 
 ---
 
+## 14. Vault sealed — the one with no symptom
+
+The most instructive fault in this file, and the only one where the correct first reaction is to
+*not* go looking for a symptom.
+
+### Inject
+```bash
+./scripts/chaos.sh vault seal
+```
+
+### Expected
+| Signal | Expectation |
+| --- | --- |
+| **HTTP** | **No change.** Latency flat, error rate 0. Orders keep being created |
+| **Health** | Both services stay `healthy`. `infra.sh health` is entirely green |
+| **Database** | The Order Service keeps using its existing dynamic credential and its open pool |
+| **Vault metrics** | `max(vault_core_unsealed)` drops to 0 **immediately** — the only signal that moves |
+| **Container health** | `lab-vault` goes `unhealthy` within ~15 s; its healthcheck is `vault status` |
+| **Alerts** | `VaultSealed`, critical, after 1m. Nothing else fires |
+| **Restart a service** | *This* is where it breaks: `VaultLoginException: Cannot login using AppRole: Vault is sealed`, and the container enters a restart loop |
+
+### Verify
+```promql
+max(vault_core_unsealed)
+up{job="vault"}
+```
+```bash
+./scripts/vault.sh status                    # Sealed  true
+curl -s -X POST http://localhost/api/v1/orders ...   # still 201
+docker restart lab-order-service             # now it cannot start
+```
+
+### What it teaches
+**The distance between cause and symptom.** Every other fault in this document announces itself within
+a scrape interval. This one announces itself at the next lease renewal or the next restart — minutes
+or an hour later, by which point the change that caused it is off the left edge of the dashboard and
+the failure looks like a database problem.
+
+That is why `VaultSealed` alerts on seal state directly rather than on its consequences, and why
+`./scripts/vault.sh status` is one of the six checks at the top of [Runbook.md](Runbook.md). By the
+time the consequences are measurable, somebody is debugging the wrong subsystem.
+
+It is also why `./scripts/chaos.sh reset` unseals: a fault with no symptom is the one most likely to
+be left injected and forgotten.
+
+### Heal
+```bash
+./scripts/chaos.sh vault unseal     # or: ./scripts/chaos.sh reset
+```
+
+---
+
+## 15. Dynamic credential revoked
+
+### Inject
+```bash
+./scripts/vault.sh revoke
+```
+
+Vault drops the PostgreSQL users it created. They stop existing — this is not a token being
+invalidated somewhere, it is `DROP ROLE`.
+
+### Expected
+| Signal | Expectation |
+| --- | --- |
+| **Immediately** | Nothing. Established connections were authenticated once and are not re-checked |
+| **Vault** | `vault_expire_num_leases` drops to 0; `VaultLeaseCountCollapsed` after 5m |
+| **Within `max-lifetime`** (15m) | Hikari recycles a connection, tries to open a new one, and fails |
+| **HTTP** | 5xx on any request needing a fresh connection; `DatabasePoolExhausted` follows |
+| **Forced immediately** | `./scripts/chaos.sh app db order 30 20` demands more connections than the pool holds, so the failure surfaces at once |
+
+### Verify
+```bash
+./scripts/vault.sh leases     # none
+./scripts/vault.sh whoami     # the v-approle-… user is gone from pg_stat_activity
+```
+
+### What it teaches
+Why `spring.datasource.hikari.max-lifetime` must stay **below** the Vault lease TTL. The pool is the
+component that discovers a dead credential, and it discovers it on its own schedule — so the recycling
+interval decides whether the failure appears in a controlled trickle the pool absorbs, or as a cliff
+when every connection expires at once.
+
+It also shows why the *lease*, not the token, is the unit that matters here: the service's Vault token
+is still perfectly valid throughout. It simply has nothing left to authenticate to PostgreSQL with.
+
+### Heal
+```bash
+docker restart lab-order-service     # re-leases at startup
+./scripts/vault.sh whoami            # a new v-approle-… user
+```
+
+---
+
 ## Combining with load
 
 A fault on an idle system tells you what the mechanism does. A fault under load tells you what it does

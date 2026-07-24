@@ -18,6 +18,7 @@ infrastructure/
 ├── kong/                   kong.yml: DB-less declarative config; routes and plugins  [step 06]
 ├── keycloak/               realm export: clients, roles, users                       [step 07]
 ├── consul/                 config/server.hcl; KV seed                                [step 08]
+├── vault/                  config/vault.hcl; policies/ one per service               [step 20]
 ├── postgres/               init/: application databases, owning roles, monitor role
 ├── oracle/                 init/: tablespace quota, schema privileges, monitor user
 │                           exporter-metrics.toml: custom V$ metrics                  [step 16]

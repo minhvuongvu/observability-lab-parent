@@ -57,6 +57,24 @@ services:
         condition: service_completed_successfully
       toxiproxy:
         condition: service_healthy
+      # Vault's healthcheck passes only when it is UNSEALED, not merely running.
+      # That is what makes this dependency meaningful: a sealed Vault serves
+      # nothing, and a service that started against one would fail at its first
+      # secret read rather than here. ./scripts/infra.sh up unseals before it
+      # brings this service up.
+      vault:
+        condition: service_healthy
+
+    # This service's AppRole credentials, written by ./scripts/vault.sh seed.
+    #
+    # required: false so a clone that has never run the seed still produces a
+    # valid compose file - the service then fails at startup with a Vault
+    # authentication error, which names the problem, instead of compose
+    # refusing to render and naming a missing file instead.
+    env_file:
+      - path: ./.env.vault.order-service
+        required: false
+
     environment:
       # dev, not local: the local profile writes a human-readable console and
       # JSON only to the file. In a container nothing reads the console
@@ -73,30 +91,38 @@ services:
       # without restarting anything. With no toxics configured - the default -
       # it is a transparent TCP relay. Set these to the real service names to
       # take it out of the path entirely.
+      #
+      # No password here. Every credential this service uses now comes from
+      # Vault at bootstrap - the runtime datasource one is not even a fixed
+      # value, it is a PostgreSQL user Vault creates per lease. What is left
+      # below is addressing: where things are, not how to get into them.
       ORDER_DB_HOST: ${ORDER_DB_HOST}
       ORDER_DB_PORT: ${ORDER_DB_PORT}
       ORDER_DB_NAME: ${ORDER_DB_NAME}
-      ORDER_DB_USER: ${ORDER_DB_USER}
-      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD}
 
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
 
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
 
       CONSUL_HOST: consul
       CONSUL_PORT: 8500
+
+      # Vault. Switched on here rather than defaulted on in application.yml,
+      # because an IDE run has no AppRole credentials and must still start.
+      # VAULT_ROLE_ID and VAULT_SECRET_ID arrive through env_file below.
+      VAULT_ENABLED: "true"
+      VAULT_ADDR: ${VAULT_ADDR}
+
       # The address this instance registers in Consul, and therefore the address
       # the Inventory Service's clients are handed. Its own compose service
       # name - resolvable by every container on lab-net, including Consul,
       # which HTTP-health-checks it back on this address.
       SERVICE_HOSTNAME: order-service
 
+      # Endpoint and bucket only. The access key and secret key moved to Vault
+      # (secret/order-service), so they no longer appear in `docker inspect`.
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
-      # The bucket-scoped account provisioned by minio-init, never MinIO root.
-      MINIO_ACCESS_KEY: ${MINIO_APP_USER}
-      MINIO_SECRET_KEY: ${MINIO_APP_PASSWORD}
       MINIO_INVOICE_BUCKET: ${MINIO_INVOICE_BUCKET}
 
       # --- Identity ---------------------------------------------------------
@@ -216,18 +242,31 @@ services:
         condition: service_completed_successfully
       toxiproxy:
         condition: service_healthy
+      # Healthy means UNSEALED here - see the note on the Order Service above.
+      vault:
+        condition: service_healthy
+
+    # This service's AppRole credentials, written by ./scripts/vault.sh seed.
+    # Optional so a clone that has not seeded still renders a valid compose file.
+    env_file:
+      - path: ./.env.vault.inventory-service
+        required: false
+
     environment:
       SPRING_PROFILES_ACTIVE: ${SERVICE_PROFILE}
 
+      # Addressing only. The Oracle credentials come from Vault
+      # (secret/inventory-service) - static ones, because Oracle has no dynamic
+      # engine in the Vault binary. See application.yml for why.
       ORACLE_DB_HOST: ${ORACLE_DB_HOST}
       ORACLE_DB_PORT: ${ORACLE_DB_PORT}
       ORACLE_PDB: ${ORACLE_PDB}
-      INVENTORY_DB_USER: ${INVENTORY_DB_USER}
-      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD}
 
       REDIS_HOST: ${REDIS_HOST}
       REDIS_PORT: ${REDIS_PORT}
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+      VAULT_ENABLED: "true"
+      VAULT_ADDR: ${VAULT_ADDR}
 
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
 

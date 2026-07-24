@@ -29,7 +29,7 @@ scenarios, not accidents.
 | **Telemetry is not optional** | A code path that cannot be observed is considered incomplete. Instrumentation is part of the definition of done, not a follow-up. |
 | **One trace, end to end** | Context propagates across HTTP, Feign and Kafka. A trace that stops at a queue boundary is a broken trace. |
 | **State has exactly one owner** | A service owns its database. No other service reads it. Integration happens through APIs and events. |
-| **Configuration is external, secrets more so** | 12-Factor: config from the environment and Consul KV; credentials never in the repository. |
+| **Configuration is external, secrets more so** | 12-Factor: config from Consul KV, credentials from Vault, and never either in the repository. The dividing line is stated once and applied everywhere — a value that could appear in a screenshot is configuration; anything else is a secret. See [Vault.md](Vault.md). |
 | **Fail visibly, degrade gracefully** | Timeouts, retries with backoff, circuit breakers and dead-letter queues everywhere a remote call is made. |
 
 ## 3. System context
@@ -48,6 +48,7 @@ flowchart TB
 
     Identity["Keycloak<br/>identity provider"]
     Registry["Consul<br/>discovery + KV config"]
+    Secrets["Vault<br/>credentials, leases, audit"]
 
     User -- "HTTPS + Bearer JWT" --> Edge
     User -- "obtain token" --> Identity
@@ -77,6 +78,7 @@ flowchart TB
         direction LR
         Keycloak["Keycloak<br/>realm, clients, roles, JWKS"]
         Consul["Consul<br/>registry, health, KV"]
+        Vault["Vault<br/>secrets, dynamic DB creds"]
     end
 
     subgraph AppPlane["Application plane"]
@@ -99,6 +101,7 @@ flowchart TB
     Kong --> Inventory
     Kong -. JWKS .-> Keycloak
     Order -. register / config .-> Consul
+    Order -. AppRole, per-lease DB credential .-> Vault
     Inventory -. register / config .-> Consul
 
     Order --> Postgres

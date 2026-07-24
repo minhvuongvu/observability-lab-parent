@@ -24,6 +24,7 @@ flowchart TB
     subgraph Control["Control plane"]
         Keycloak["Keycloak :18080<br/>OIDC · realms · roles"]
         Consul["Consul :8500<br/>registry · health · KV"]
+        Vault["Vault :8200<br/>secrets · leases · audit"]
     end
 
     subgraph Apps["Application plane"]
@@ -77,6 +78,8 @@ flowchart TB
     Inventory --> Redis
 
     Order -.->|register · resolve| Consul
+    Order -.->|AppRole · dynamic PostgreSQL credential| Vault
+    Inventory -.->|AppRole · static credential| Vault
     Inventory -.->|register gRPC port| Consul
 
     Order -.-> Agents
@@ -122,6 +125,7 @@ flowchart TB
 | 5 | Inventory → Kafka → Order | Kafka + JSON | ✗ | **Decoupled** | `inventory-updated` — settlement |
 | 6 | Kong → Keycloak | HTTPS | ✓ | Availability | JWKS |
 | 7 | Service → Consul | HTTP | ✓ | Startup | Registration, health, KV config |
+| 7b | Service → Vault | HTTP | ✓ | Startup, then lease renewal | AppRole login, KV secrets, per-lease PostgreSQL credential |
 | 8 | Service → PostgreSQL / Oracle | JDBC | ✓ | Availability | System of record |
 | 9 | Service → Redis | RESP | ✓ | Degradable | Cache |
 | 10 | Service → MinIO | HTTP (S3) | ✗ | Degradable | Invoice objects |
@@ -329,6 +333,7 @@ fail to. A breaker with no fallback is only a faster failure.
 | Kafka (external) | 29092 | Jaeger UI | 16686 |
 | Kafka UI | 8090 | Zipkin | 9411 |
 | Consul | 8500 | OpenSearch / Dashboards | 9200 / 5601 |
+| Vault | 8200 | | |
 | PostgreSQL | 15432 | Elasticsearch / Kibana | 9201 / 5602 |
 | Oracle | 1521 | MinIO API / console | 9000 / 9001 |
 | Redis | 16379 | | |

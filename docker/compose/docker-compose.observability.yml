@@ -82,6 +82,15 @@ services:
       # Read-only: an agent that can write to the logs it reads can corrupt the
       # evidence it exists to preserve.
       - lab-logs:/var/log/lab:ro
+      # Vault's audit log, on its own volume and its own mount point.
+      #
+      # Separate from lab-logs for two reasons that both matter: Vault runs as
+      # a different uid and could not write into a directory owned by the
+      # services' user, and its audit records have a completely different
+      # schema. Tailed by a second scrape job with its own parsing - feeding
+      # them through the service pipeline would produce records whose every
+      # extracted label is empty.
+      - vault-logs:/var/log/vault:ro
       - promtail-data:/var/lib/promtail
     networks:
       - lab-net

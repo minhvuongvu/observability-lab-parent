@@ -132,6 +132,18 @@
             <artifactId>spring-cloud-starter-consul-config</artifactId>
         </dependency>
 
+        <!-- Secrets (Vault), the counterpart to Consul above.
+             Consul KV holds configuration, Vault holds credentials, and nothing
+             lives in both. This starter contributes two property sources at
+             bootstrap: the static KV v2 values, and a dynamic PostgreSQL
+             credential the database engine mints per lease - which is why the
+             datasource username in application.yml has no static default worth
+             trusting inside a container. See docs/Vault.md. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-vault-config</artifactId>
+        </dependency>
+
         <!--
             gRPC client. This service is the consumer of inventory.v1: it
             generates client stubs from the same proto/inventory the provider

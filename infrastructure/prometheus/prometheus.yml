@@ -188,6 +188,28 @@ scrape_configs:
       - targets: ["grafana:3000"]
 
   # -------------------------------------------------------------------------
+  # Vault - the secret store.
+  #
+  # Scraped without a token. The listener in infrastructure/vault/config/vault.hcl
+  # sets unauthenticated_metrics_access, which exposes operational telemetry -
+  # seal state, request rates, lease and token counts - and no secret material.
+  #
+  # The alternative is issuing Prometheus a Vault token and renewing it, which
+  # puts a credential in the monitoring configuration in order to monitor the
+  # credential store, and breaks the metrics pipeline the day that token lapses.
+  #
+  # What makes this job worth having: a sealed Vault is invisible everywhere
+  # else. Running services keep serving from secrets they already hold, so
+  # every other signal in this stack looks healthy for as long as an hour.
+  # vault_core_unsealed is the only place it shows immediately.
+  - job_name: vault
+    metrics_path: /v1/sys/metrics
+    params:
+      format: [prometheus]
+    static_configs:
+      - targets: ["vault:8200"]
+
+  # -------------------------------------------------------------------------
   # Toxiproxy - the fault injection point.
   #
   # Scraped because a fault that was injected and a fault that occurred look

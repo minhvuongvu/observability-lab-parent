@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Injects faults, at two levels.
+# Injects faults, at three levels.
 #
 # NETWORK faults, through Toxiproxy, in the path between the services and
 # everything below them:
@@ -35,6 +35,15 @@
 #   ./scripts/chaos.sh app breaker <svc> [calls]
 #
 #   svc: order | inventory
+#
+# SECRET STORE faults (step 20), through Vault - the slowest-acting of the
+# three, because nothing fails until something needs a secret it does not
+# already hold:
+#
+#   ./scripts/chaos.sh vault seal              secrets become unreadable
+#   ./scripts/chaos.sh vault unseal            recover
+#   ./scripts/chaos.sh vault revoke            drop the dynamic DB credentials
+#   ./scripts/chaos.sh vault status            seal state and mounts
 #
 # And the one that must always work:
 #
@@ -487,10 +496,68 @@ cmd_reset() {
     fi
   done
 
+  # A sealed Vault is a fault like any other, and the one most likely to be
+  # left behind: it breaks nothing visibly, so there is no symptom to remind
+  # anyone it is still injected. The next person to restart a service would
+  # find it unable to start, hours later, for no apparent reason.
+  if [ "$("${SCRIPT_DIR}/vault.sh" status 2>/dev/null | awk '/^Sealed/{print $2}')" = "true" ]; then
+    echo "Vault: sealed, unsealing."
+    "${SCRIPT_DIR}/vault.sh" unseal >/dev/null 2>&1 \
+      && echo "Vault: unsealed." \
+      || echo "Vault: could NOT be unsealed - run ./scripts/vault.sh unseal by hand."
+  else
+    echo "Vault: unsealed, nothing to do."
+  fi
+
   echo
   echo "Give the services a moment: connection pools and the circuit breaker"
   echo "recover on their own schedule, not on this command's. A breaker in the"
   echo "open state waits out its configured window before it half-opens."
+}
+
+# -----------------------------------------------------------------------------
+# Vault faults (step 20).
+#
+# A third level, and the one with the longest fuse. Sealing Vault breaks nothing
+# immediately: every service keeps serving from the connections and secrets it
+# already holds, and fails only at its next renewal or its next new connection.
+# That delay - minutes, not seconds - is the lesson. The cause and the symptom
+# are far enough apart that the symptom looks unrelated to anything anyone did.
+#
+# Delegated to vault.sh rather than reimplemented, so there is one place that
+# knows how to talk to Vault.
+# -----------------------------------------------------------------------------
+cmd_vault() {
+  local action="${1:-status}"
+  local vault_sh
+  vault_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vault.sh"
+
+  case "${action}" in
+    seal)
+      "${vault_sh}" seal
+      echo
+      echo "Expected: no immediate change. Watch for the delayed failure -"
+      echo "  vault_core_unsealed goes to 0 in Prometheus, immediately"
+      echo "  VaultSealed fires after 1m"
+      echo "  the services degrade only at their next lease renewal"
+      ;;
+    unseal)
+      "${vault_sh}" unseal
+      ;;
+    revoke)
+      "${vault_sh}" revoke
+      echo
+      echo "Expected: the Order Service keeps working on its open connections."
+      echo "Force it to open a new one and watch it fail:"
+      echo "  ./scripts/chaos.sh app db order 30 20"
+      ;;
+    status)
+      "${vault_sh}" status
+      ;;
+    *)
+      die "unknown vault action '${action}'. Try: seal | unseal | revoke | status"
+      ;;
+  esac
 }
 
 case "${1:-help}" in
@@ -502,7 +569,8 @@ case "${1:-help}" in
   throttle)            shift; cmd_throttle "$@" ;;
   heal)                shift; cmd_heal "$@" ;;
   app)                 shift; cmd_app "$@" ;;
+  vault)               shift; cmd_vault "$@" ;;
   reset)               shift; cmd_reset "$@" ;;
-  help|-h|--help)      sed -n '2,53p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  help|-h|--help)      sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *)                   die "unknown command '${1}'. Try: $(basename "$0") help" ;;
 esac

@@ -411,7 +411,7 @@ whatever the service is written in.
 Some failures cannot be produced that way. A memory leak, a CPU spike, a lock-ordering deadlock, a
 forced exception at a chosen point, a poisoned message — each is a thing the process must do to
 itself. Those are in **[FailureSimulation.md](FailureSimulation.md)**, thirteen scenarios in the same
-four-part form, driven by the same `chaos.sh` plus a scenario runner:
+four-part form — plus two more for the secret store, which fail on a longer fuse than either level here, driven by the same `chaos.sh` plus a scenario runner:
 
 ```bash
 ./scripts/scenario.sh list                     # every in-process scenario

@@ -1,0 +1,153 @@
+# ---------------------------------------------------------------------------
+# Vault alerts: the secret store, and whether anything can still get a
+# credential out of it.
+#
+# Label set and annotations follow alerts-infrastructure.yml; the routing tree
+# and inhibition rules in alertmanager.yml match on them.
+#
+# These alerts exist because Vault fails in a way nothing else in this stack
+# does: SILENTLY, and with a delay measured in the lease TTL rather than in
+# seconds. Seal Vault right now and every service keeps serving - they hold
+# their credentials and their open connections. Latency is flat, error rate is
+# flat, every health endpoint is green. The stack breaks at the next lease
+# renewal, up to an hour later, by which point the cause is an hour in the past
+# and looks unrelated to the symptom.
+#
+# That delay is why seal state is alerted directly rather than inferred from
+# its consequences. By the time the consequences are measurable, the on-call
+# engineer is debugging a database connection problem.
+# ---------------------------------------------------------------------------
+
+groups:
+
+  - name: lab-vault-availability
+    interval: 30s
+    rules:
+
+      - alert: VaultSealed
+        # max() over the metric, and NOT `vault_core_unsealed == 0`.
+        #
+        # Vault publishes this gauge twice: once labelled with the real cluster
+        # id, and once with cluster="" which is permanently 0. The naive
+        # comparison matches that empty-cluster series on a perfectly healthy
+        # Vault and fires forever - an alert that is always on, which trains
+        # everyone to ignore the one time it means something.
+        expr: max(vault_core_unsealed) == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Vault is sealed"
+          description: "No Vault node reports an unsealed core."
+          impact: >-
+            Nothing can read a secret. Running services continue on the
+            credentials they already hold and degrade later, at their next
+            lease renewal or their next new database connection - so the
+            absence of other alerts right now means nothing.
+          action: "./scripts/vault.sh unseal"
+          runbook: "docs/Runbook.md#vault-is-sealed"
+          dashboard: "Vault / Secret Store"
+
+      - alert: VaultDown
+        # Distinct from sealed. Sealed means Vault is answering and refusing;
+        # down means it is not answering, and the two need different first
+        # moves - one is an unseal, the other is a container that is not there.
+        expr: up{job="vault"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Vault is not answering scrapes"
+          description: "No successful scrape of the Vault telemetry endpoint for a minute."
+          impact: >-
+            Same delayed failure as a sealed Vault, plus no telemetry to
+            confirm which of the two it is.
+          action: "./scripts/infra.sh logs vault"
+          runbook: "docs/Runbook.md#vault-is-sealed"
+          dashboard: "Vault / Secret Store"
+
+  - name: lab-vault-leases
+    interval: 30s
+    rules:
+
+      - alert: VaultLeaseCountCollapsed
+        # Outstanding leases dropping to zero while services are up means the
+        # dynamic credentials were revoked or expired without being renewed.
+        # The Order Service's pool will keep working until max-lifetime recycles
+        # a connection, and then it will not.
+        expr: |
+          vault_expire_num_leases == 0
+          and on() (count(up{job="observability-lab-services"} == 1) > 0)
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "Vault holds no outstanding leases while services are running"
+          description: "vault_expire_num_leases is 0 with at least one service up."
+          impact: >-
+            The Order Service's dynamic PostgreSQL credential has been revoked
+            or has expired. Existing pooled connections still work; the next
+            one the pool opens will fail.
+          action: "./scripts/vault.sh leases, then restart the service to re-lease"
+          runbook: "docs/Runbook.md#dynamic-credential-expired"
+          dashboard: "Vault / Secret Store"
+
+      - alert: VaultPermissionDenied
+        # Sustained 403s mean something is repeatedly asking for a secret its
+        # policy does not grant - a mis-scoped AppRole, a renamed KV path, or a
+        # service reaching for a path that belongs to another one.
+        #
+        # Built on vault_core_response_status_code and NOT on
+        # vault_token_create_failed, which is the obvious choice and is wrong:
+        # that series does not exist until the first failure, so an alert on it
+        # cannot be tested, cannot be seen in the dashboard, and would sit dead
+        # in this file indefinitely. Every expression here was checked against
+        # the running Vault's /v1/sys/metrics before being written down.
+        #
+        # A brief burst is normal - ./scripts/vault.sh deny produces one on
+        # purpose - so this needs five minutes of it.
+        expr: rate(vault_core_response_status_code{code="403"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          category: infrastructure
+        annotations:
+          summary: "Vault is refusing requests"
+          description: "Sustained 403 responses from Vault for five minutes."
+          impact: >-
+            Something cannot read a secret it needs. If it is a service, it
+            will fail at its next restart even if it looks healthy now.
+          action: "./scripts/vault.sh audit 50 - the denied path is named in the log"
+          runbook: "docs/Runbook.md#vault-authentication-failing"
+          dashboard: "Vault / Secret Store"
+
+  - name: lab-vault-audit
+    interval: 30s
+    rules:
+
+      - alert: VaultAuditDeviceFailing
+        # The one that takes Vault down on purpose.
+        #
+        # Vault REFUSES every request when all audit devices are failing - a
+        # full disk is enough. That is a deliberate design choice: an
+        # unauditable secret store is considered worse than an unavailable one.
+        # It is also deeply surprising the first time, because the symptom is a
+        # total Vault outage and the cause is a log file.
+        expr: rate(vault_audit_log_request_failure[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          category: infrastructure
+        annotations:
+          summary: "Vault audit device is failing"
+          description: "vault_audit_log_request_failure is non-zero."
+          impact: >-
+            Vault refuses EVERY request once all audit devices fail. This is
+            not degradation, it is a full outage of the secret store, and the
+            usual cause is a full disk rather than anything about Vault.
+          action: "Check disk on the vault-logs volume, then: ./scripts/vault.sh audit"
+          runbook: "docs/Runbook.md#vault-audit-device-failing"
+          dashboard: "Vault / Secret Store"

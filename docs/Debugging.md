@@ -560,7 +560,7 @@ rather than anecdote.
 | [Observability.md](Observability.md) | What each signal is for, and the symptom map |
 | [Exercises.md](Exercises.md) | Graded practice with checkable answers |
 | [Simulation.md](Simulation.md) | Network faults and load, signal by signal |
-| [FailureSimulation.md](FailureSimulation.md) | The 13 in-process scenarios |
+| [FailureSimulation.md](FailureSimulation.md) | 13 in-process scenarios, plus 2 for the secret store |
 | [Troubleshooting.md](Troubleshooting.md) | Symptom → cause → fix, when you need the answer not the method |
 | [Metrics.md](Metrics.md) / [Logging.md](Logging.md) / [Tracing.md](Tracing.md) / [Profiling.md](Profiling.md) | The reference behind each signal |
 | [Alerting.md](Alerting.md) | Which alert fires, when, and what to do first |

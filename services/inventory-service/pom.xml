@@ -112,6 +112,17 @@
             <artifactId>spring-cloud-starter-consul-config</artifactId>
         </dependency>
 
+        <!-- Secrets (Vault), the counterpart to Consul above.
+             KV v2 only here. Oracle has no dynamic credential engine in the
+             Vault binary - the plugin ships separately and needs the Oracle
+             Instant Client - so this service reads a static database credential
+             where the Order Service is handed a generated one. That asymmetry
+             is documented rather than hidden; see docs/Vault.md. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-vault-config</artifactId>
+        </dependency>
+
         <!--
             gRPC server. This service is the provider: it owns proto/inventory
             and serves inventory.v1.InventoryService on its own port, alongside

@@ -51,6 +51,15 @@ Thumbs.db
 *.jks
 secrets/
 
+# Vault unseal keys and the initial root token, written by ./scripts/vault.sh
+# init. This single file opens every secret in the stack - it is the one place
+# the chain of trust still terminates on disk, and docs/Vault.md says so rather
+# than pretending Vault removed the problem instead of shrinking it.
+#
+# Committing this would be strictly worse than the .env it replaced: same
+# exposure, plus the false confidence of having "moved to a secret manager".
+.vault-keys.json
+
 # ---------------------------------------------------------------------------
 # Runtime artefacts produced by local services and infrastructure containers
 # ---------------------------------------------------------------------------

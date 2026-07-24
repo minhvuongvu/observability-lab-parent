@@ -12,10 +12,10 @@ fault, because the component is what is being looked for.
 
 ---
 
-## 1. Triage — four questions, in this order
+## 1. Triage — five questions, in this order
 
-Answer these before opening a dashboard. Each one eliminates a whole class of cause, and three of the
-four cost under a second.
+Answer these before opening a dashboard. Each one eliminates a whole class of cause, and four of the
+five cost under a second.
 
 ```bash
 # 1. Is a fault still injected?  This is the most expensive mistake in this lab.
@@ -27,7 +27,10 @@ four cost under a second.
 # 3. Is any scrape target down?  A missing exporter cannot fire the alert you are waiting for.
 curl -s 'http://localhost:9090/api/v1/query?query=up==0'
 
-# 4. Is this a path problem or a component problem?
+# 4. Is Vault sealed?  The only fault here with no immediate symptom.
+./scripts/vault.sh status
+
+# 5. Is this a path problem or a component problem?
 #    The exporters bypass Toxiproxy. If pg_up==1 while the service reports timeouts,
 #    the fault is in the PATH, and the disagreement is the diagnosis.
 ```
@@ -36,7 +39,13 @@ Question 1 catches more than it should. A 400 ms latency toxic on `postgres` pro
 looks broken in precisely the way a regression looks broken, and no signal anywhere says "somebody did
 this on purpose".
 
-**`./scripts/chaos.sh reset` clears both fault levels, everywhere.** Run it before concluding anything.
+Question 4 is here for the opposite reason to question 1. A sealed Vault produces a system that looks
+**healthy** — every running service keeps serving from the secrets it already holds, so questions 2 and
+3 both pass while the next service restart cannot start at all. The symptom arrives up to an hour after
+the cause. See [Vault.md](Vault.md).
+
+**`./scripts/chaos.sh reset` clears both fault levels, everywhere** — and unseals Vault, for the same
+reason. Run it before concluding anything.
 
 ---
 
@@ -169,6 +178,54 @@ third.
 ---
 
 ## 3. A service will not start or stay up
+
+### `Cannot login using AppRole: Vault is sealed`
+
+```
+org.springframework.vault.authentication.VaultLoginException: Cannot login using AppRole: Vault is sealed
+```
+
+The container enters a restart loop. Vault is sealed and the service cannot get its credentials.
+
+```bash
+./scripts/vault.sh status     # Sealed  true
+./scripts/vault.sh unseal
+```
+
+Vault boots sealed after **every** restart — it is not running in dev mode. `./scripts/infra.sh up`
+unseals it for you; a bare `docker compose up`, a Docker Desktop restart or a machine reboot does not.
+
+Note what this is *not*: an outage that just started. Vault may have been sealed for an hour without
+anything failing, because the other services were already holding their credentials. The restart is
+what exposed it.
+
+### `Status 403 Forbidden [secret/data/<service>/<profile>]`
+
+Vault is unsealed, authentication worked, and the **policy** does not grant the path.
+
+The path in the message usually ends in a profile name (`/dev`, `/prod`) that was never meant to hold
+a secret. Spring Cloud Vault reads `<backend>/<context>/<profile>` as well as `<backend>/<context>`,
+and Vault answers an ungranted path with **403, not 404** — so a missing grant and a missing secret
+produce the identical error.
+
+The policies in `infrastructure/vault/policies/` grant `secret/data/<service>/*` for exactly this
+reason. If you added a profile or renamed a service, re-apply them:
+
+```bash
+./scripts/vault.sh seed
+./scripts/vault.sh audit 20    # the denied path is named
+```
+
+### The service starts, but is it really using Vault?
+
+This is the failure with no error message. The `${VAR:default}` fallbacks in `application.yml` are the
+working lab credentials, so a service that never reached Vault connects, works, and looks correct.
+
+```bash
+./scripts/vault.sh whoami
+```
+
+`v-approle-order-se-…` means the credential came from Vault. `order_user` means it did not.
 
 ### Flyway refuses to migrate
 
@@ -745,5 +802,5 @@ diagnoses a deadlock.
 | [Deployment.md](Deployment.md) | Configuration surface, startup ordering, rollback |
 | [Observability.md](Observability.md) | Where to look, by symptom |
 | [Simulation.md](Simulation.md) | Network faults and load, signal by signal |
-| [FailureSimulation.md](FailureSimulation.md) | The 13 in-process scenarios |
+| [FailureSimulation.md](FailureSimulation.md) | 13 in-process scenarios, plus 2 for the secret store |
 | [Infrastructure.md](Infrastructure.md) | Component detail and network topology |

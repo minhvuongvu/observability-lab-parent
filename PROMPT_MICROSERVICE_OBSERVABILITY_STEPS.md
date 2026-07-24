@@ -897,6 +897,242 @@ Stop.
 
 ---
 
+# STEP 20
+
+## Secret Management with HashiCorp Vault
+
+### Goal
+
+Take the credentials the two Spring Boot services use out of a plain file and
+put them behind an authenticated, audited, revocable secret store.
+
+docs/Security.md already names this as the gap. Section 9 documents every
+credential as living in `docker/compose/.env`, and the closing recommendations
+say to move them to a secret manager. This step is that move, and it must
+correct those documents rather than leave them describing the old arrangement.
+
+### The distinction that governs this step
+
+Consul KV already externalises configuration. Vault is not a second Consul.
+
+  Configuration is a value that could appear in a screenshot.
+  A secret is a value that could not.
+
+A port number, a pool size, a retention window, a sampling rate - Consul KV.
+A password, a token, an access key - Vault.
+
+Nothing may live in both. A value duplicated across two stores has two sources
+of truth and will eventually disagree, and the copy that wins will be whichever
+one the reader did not check.
+
+### Scope, stated honestly before anything is built
+
+Vault can only serve a secret to something that can ask for it.
+
+The two Spring Boot services can ask. They get Spring Cloud Vault.
+
+Keycloak, Grafana, Redis, MinIO, PostgreSQL and Oracle cannot. They read
+environment variables that the container runtime hands them at boot, and no
+amount of Vault configuration changes that. Their bootstrap credentials stay in
+`.env` for this step.
+
+Do NOT pretend otherwise. Do NOT write a document implying the stack has no
+credentials on disk when six components still do.
+
+Closing that remaining gap needs Vault Agent rendering an env file per
+container, which is a different mechanism with its own failure modes. It is a
+candidate for a later step. This step does not attempt it.
+
+### Vault itself
+
+Persistent storage. File or integrated Raft, your call, but justify it in the
+documentation.
+
+Real initialisation. Real unseal. Real seal state.
+
+Do NOT use `-dev` mode. Dev mode auto-unseals, keeps everything in memory and
+hands out a fixed root token, which removes precisely the three things that are
+hard about operating Vault and worth learning here.
+
+Accept the cost this creates: the stack no longer comes up with one command.
+Vault boots sealed after every restart and something must unseal it. Solve that
+explicitly and document it - an unseal step the reader discovers by having the
+stack fail is a bad first experience.
+
+### The bootstrap problem
+
+Vault holds the credentials. Something must hold the credentials to Vault.
+
+The unseal keys and each service's AppRole `role-id` and `secret-id` have to
+exist somewhere before Vault can serve anything. In this lab that is a
+git-ignored file, which means the chain of trust still terminates in a file on
+disk.
+
+State this plainly in docs/Vault.md and in docs/Security.md. It is the honest
+answer, and a reader who thinks Vault eliminated the problem rather than moving
+and shrinking it has learned the wrong lesson. What actually improved: one file
+instead of twenty credentials, revocable, audited, and scoped per service.
+
+### Auth
+
+AppRole, one per service.
+
+A policy per service, scoped to the paths that service actually reads. Verify
+the scoping by proving the negative: order-service's token must be denied when
+it reads inventory-service's path, and that denial must appear in the audit log.
+
+A policy nobody has tested a denial against is a policy that might be `*`.
+
+### Secrets engines
+
+KV v2, for static credentials.
+
+Use the versioning. It is the reason to run v2 rather than v1, and a documented
+rollback of a bad secret write is worth more than a paragraph explaining that
+versioning exists.
+
+Database engine, for dynamic PostgreSQL credentials.
+
+This is the part that makes Vault something other than an encrypted `.env`.
+Vault creates a real PostgreSQL user with a TTL, hands it to order-service,
+renews the lease while the service runs, and drops the user when the lease ends.
+
+Two traps, both of which must be handled rather than discovered:
+
+Flyway needs DDL rights and creates objects that acquire an owner. A short-lived
+dynamic user would own the schema and then be dropped. Migrations therefore keep
+a static owner credential from KV v2. Only the runtime Hikari pool uses dynamic
+credentials. This split is what real deployments do and the reasoning belongs in
+the documentation.
+
+HikariCP holds connections that authenticated once. When credentials rotate,
+open connections keep working and new ones fail, so the failure surfaces minutes
+later under pool growth rather than at rotation. Align `max-lifetime` with the
+lease TTL so the pool recycles inside the credential's lifetime, and say what
+the two numbers must satisfy relative to each other.
+
+Oracle is not one of the database plugins built into the Vault binary. It is
+distributed separately as `vault-plugin-database-oracle`, needs the Oracle
+Instant Client libraries present, and has to be placed in a plugin directory and
+registered in the plugin catalogue before it can be used.
+
+Decide whether to take that on, and record the decision either way. If you do
+not, inventory-service uses static KV v2 credentials and the asymmetry is a
+stated limitation. Do NOT silently give one service dynamic credentials and
+leave the reader to work out why the other did not get them.
+
+### Spring integration
+
+`spring-cloud-starter-vault-config`, joining the existing
+`spring.config.import` chain alongside Consul.
+
+Order matters and must be documented: Vault has to resolve before the datasource
+is built.
+
+Keep the `${VAR:default}` fallbacks working for local runs outside Docker. A
+developer running one service from an IDE without Vault must still get a
+startup, and `optional:` is how the existing Consul import already achieves it.
+
+### Observability
+
+Vault is infrastructure in this lab, which means it gets the same treatment as
+every other component. A secret store that fails silently is worse than a file.
+
+Metrics. Vault exposes Prometheus-format telemetry at `/v1/sys/metrics`. Add
+the scrape job. Handle the authentication the endpoint requires.
+
+Audit device. Enable one, file-backed, and route it into the existing log
+pipeline so audit entries land in Loki alongside everything else. Note in the
+documentation that Vault refuses to serve requests when every audit device is
+failing, which is deliberate and surprising the first time it happens.
+
+Grafana dashboard. Seal state, request rate, lease count, token count, audit
+log volume.
+
+Alerts, added to the existing Alertmanager configuration:
+
+- Vault sealed
+- Vault unreachable from a service
+- Lease renewal failing
+- Audit device failing
+
+Trace the secret fetch. It happens at bootstrap, before the tracing exporter is
+fully up, so say honestly what is and is not visible in Tempo rather than
+claiming coverage that is not there.
+
+### Failure simulation
+
+Follow the form docs/Simulation.md and docs/FailureSimulation.md already
+establish: Inject, Expected, Verify, What it teaches. State the expectation
+before running it.
+
+- Vault sealed while services are running and healthy
+- Vault unreachable, injected with the Toxiproxy already in the stack
+- Lease expired without renewal, then a new connection requested
+- AppRole secret-id revoked while the service holds a valid token
+- Vault restarted, therefore sealed, then a service restarted against it
+
+The first one is the most instructive: a sealed Vault does not take down a
+running service immediately. It takes it down at the next credential renewal,
+which may be an hour later and will look unrelated. Make that delay visible.
+
+### Scripts
+
+Follow the existing `scripts/*.sh` conventions.
+
+`scripts/vault.sh` covering init, unseal, status, seed, policy application,
+dynamic credential inspection, and revocation.
+
+Initialisation must be idempotent. Re-running it against an initialised Vault
+reports state and exits cleanly - it does not error, and it does not re-init.
+
+Extend `scripts/infra.sh` so the unseal step is part of bringing the stack up.
+
+Extend `scripts/chaos.sh` with the Vault faults above.
+
+### Documentation
+
+New:
+
+docs/Vault.md - the reference document, in the form of docs/Consul.md and
+docs/Keycloak.md.
+
+Update, because each of these currently describes an arrangement this step
+replaces:
+
+- docs/Security.md - section 9 credentials, the lab-simplification table, and
+  the closing recommendations. Its "credentials in a plain .env" row is now
+  partly wrong and must say exactly which parts remain true
+- docs/Configuration.md - what moved to Vault, what stayed in `.env`, what must
+  change together
+- docs/Infrastructure.md and docs/InfrastructureDiagram.md
+- docs/Architecture.md and SYSTEM_ARCHITECTURE.md
+- docs/Operations.md - the unseal step, and what a sealed Vault looks like
+- docs/Runbook.md and docs/Troubleshooting.md - sealed Vault, expired lease,
+  denied policy
+- docs/Alerting.md - the new alerts
+- docs/Deployment.md, docs/SequenceDiagrams.md, docs/Observability.md
+- GETTING_STARTED.md - Vault init and unseal in the first-run path
+- README.md, LEARNING_ROADMAP.md, docs/Exercises.md
+
+### Rules
+
+Every command copy-pasteable and verified against the running stack.
+
+`.env.example` must contain no real credential, before and after.
+
+Nothing regresses. The stack still comes up, the order flow still runs, every
+existing dashboard still populates. A secret store that breaks the system it
+protects has not improved anything.
+
+Prove a secret was read from Vault rather than from a leftover environment
+variable. A service that silently fell back to `.env` looks identical to one
+correctly wired to Vault, and the difference is the entire point of the step.
+
+Stop.
+
+---
+
 # Final Rule
 
 Never continue to another step automatically.

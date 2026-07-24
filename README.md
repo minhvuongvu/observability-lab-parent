@@ -22,8 +22,10 @@ becomes *"how do I find out what this system is doing right now?"*
 
 - Not a CRUD demo. The domain is small on purpose.
 - Not a reference for business modelling. It is a reference for *operability*.
-- Not a production deployment. It runs on one machine via Docker Compose, with credentials and
-  resource limits sized for a laptop.
+- Not a production deployment. It runs on one machine via Docker Compose, with resource limits sized
+  for a laptop. The services' credentials live in Vault; the infrastructure containers' credentials
+  still live in a git-ignored `.env`, and [docs/Vault.md §11](docs/Vault.md#11-what-this-step-did-not-do)
+  says exactly which and why.
 
 ---
 
@@ -43,6 +45,7 @@ flowchart TB
     subgraph Platform["Platform services"]
         Keycloak["Keycloak<br/>OIDC, realms, roles"]
         Consul["Consul<br/>discovery + KV config"]
+        Vault["Vault<br/>secrets + dynamic DB credentials"]
     end
 
     subgraph Apps["Application services"]
@@ -91,6 +94,8 @@ flowchart TB
 
     Order -. register .-> Consul
     Inventory -. register .-> Consul
+    Order -. AppRole, per-lease DB credential .-> Vault
+    Inventory -. AppRole, static credential .-> Vault
     K6 -. remote_write .-> Metrics
     Metrics -. scrape, never via Tox .-> Apps
     Metrics -. scrape, never via Tox .-> State
@@ -136,6 +141,7 @@ log — is in [docs/Architecture.md](docs/Architecture.md).
 | API gateway | Kong Gateway |
 | Identity | Keycloak (OIDC / JWT) |
 | Discovery & config | Consul, Consul KV |
+| Secrets | HashiCorp Vault (KV v2, dynamic PostgreSQL credentials, AppRole) |
 | Internal RPC | gRPC, Protocol Buffers |
 | Messaging | Apache Kafka, Kafka UI |
 | Cache | Redis |
@@ -251,7 +257,7 @@ without configuring anything. The one remaining Windows runtime quirk is in
 
 ### Where the memory goes
 
-The `deploy.resources.limits.memory` values sum to **15.6 GB** for the default stack and **20.6 GB**
+The `deploy.resources.limits.memory` values sum to **16.1 GB** for the default stack and **21.1 GB**
 with `search` — both larger than the 10 GB and 14 GB recommended above. That is deliberate, and worth
 understanding before choosing a number.
 
@@ -262,8 +268,8 @@ their ceiling at the same instant?"* — a question with no practical bearing on
 allocate.
 
 **The stack is overbooked on purpose**, the way an airline sells 160 seats on a 150-seat aircraft. It
-works because the passengers do not all show up. Measured on an idle default stack, the 32
-long-running containers together use about **5.1 GB against the 15.6 GB of ceilings — 33%.** The
+works because the passengers do not all show up. Measured on an idle default stack, the 33
+long-running containers together use about **5.1 GB against the 16.1 GB of ceilings — 32%.** The
 spread across containers is what makes the average:
 
 | Container | In use / ceiling | Ratio |
@@ -303,7 +309,7 @@ knowing before enabling it:
 
 These are passengers who always show up. Where the default stack sits at 33% of its ceilings, `search`
 starts near 75% of its own and stays there. The gap that makes the overbooking safe — the entire reason
-10 GB covers 15.6 GB of limits — is absent from precisely these five containers.
+10 GB covers 16.1 GB of limits — is absent from precisely these five containers.
 
 Reading "+5 GB of ceilings" and reasoning "so about 1.7 GB in practice, like the other 33%" is the
 specific mistake that ends in an OOM kill. Budget `search` at close to its stated limits.
@@ -420,7 +426,7 @@ This compiles all modules, runs the tests and produces an executable jar per ser
 ## Run the system
 
 **One command starts everything.** Both services, the gateway, identity, registry, two databases, the
-broker, cache, object storage, the whole observability stack and the fault proxy — 35 containers, all
+broker, cache, object storage, the secret store, the whole observability stack and the fault proxy — 36 containers, all
 on one Docker network, `lab-net`. Nothing runs outside it.
 
 ```bash
@@ -461,7 +467,8 @@ running on a laptop.
 ./scripts/chaos.sh slow inventory-grpc 800  # a slow dependency, past its deadline
 ./scripts/chaos.sh blackhole oracle       # accept connections, answer nothing
 ./scripts/chaos.sh down redis             # refuse connections outright
-./scripts/chaos.sh reset                  # undo everything
+./scripts/chaos.sh vault seal             # secrets unreadable — and nothing breaks for an hour
+./scripts/chaos.sh reset                  # undo everything, including the seal
 ```
 
 k6 runs **inside** the network, so it experiences the same network the services do. Toxiproxy sits in
@@ -667,6 +674,7 @@ about ten minutes.
 | [docs/Infrastructure.md](docs/Infrastructure.md) | What runs in Docker, network topology, init scripts, healthchecks, data lifecycle, troubleshooting |
 | [docs/Keycloak.md](docs/Keycloak.md) | Authentication: the realm, clients, roles and users, the JWT flow, and how the gateway and services verify a token |
 | [docs/Consul.md](docs/Consul.md) | Service discovery and configuration: registration, health checks, and reading configuration from Consul KV |
+| [docs/Vault.md](docs/Vault.md) | Secret management: AppRole authentication, policy scoping, static and dynamic credentials, the audit log, and an honest account of what the bootstrap still costs |
 | [docs/Kafka.md](docs/Kafka.md) | Event-driven integration: topics, consumer groups, the transactional outbox, idempotency, retry, backoff and the dead-letter topic |
 | [docs/Redis.md](docs/Redis.md) | Caching: what is cached and what deliberately is not, key layout, TTL, eviction and after-commit invalidation |
 | [docs/MinIO.md](docs/MinIO.md) | Object storage: the invoice bucket, least-privilege credentials, upload timing, object naming and signed URLs |
@@ -722,11 +730,12 @@ documented before the next one starts.
 | 13 | Profiling: Pyroscope agent and server, CPU/heap/alloc/lock profiles | **Complete** |
 | 14 | Dashboards: production-quality Grafana dashboards per signal | **Complete** |
 | 15 | Enterprise gRPC: proto contract, streaming, deadlines, retries, circuit breaker, gRPC observability | **Complete** |
-| 16 | Alerting: 33 rules in three severities, Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
+| 16 | Alerting: 33 rules in three severities (38 after step 20), Alertmanager routing to email and webhook, five exporters, alert guide and matrix | **Complete** |
 | — | Containerisation: both services in Docker, four networks collapsed into `lab-net`, k6 load generation and Toxiproxy fault injection | **Complete** |
 | 17 | Failure simulation: 14 chaos endpoints guarded three ways, a scenario runner, and 13 documented scenarios. Found and fixed a dead-letter path that could never publish | **Complete** |
 | 18 | Reference documentation: deployment, runbook, troubleshooting, performance and security guides, sequence diagrams, infrastructure diagram, final README | **Complete** |
 | 19 | Learning guides: getting started, operations, configuration, debugging walkthroughs, graded exercises — every command verified against a running stack | **Complete** |
+| 20 | Secret management: Vault running a real sealed server, AppRole per service, KV v2, dynamic PostgreSQL credentials with lease renewal, audit log into Loki, 5 alerts, 2 failure scenarios | **Complete** |
 
 Specifications live in `PROMPT_MICROSERVICE_OBSERVABILITY_LAB.md` (what to build) and
 `PROMPT_MICROSERVICE_OBSERVABILITY_STEPS.md` (the order to build it in).

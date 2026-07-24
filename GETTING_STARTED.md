@@ -1,6 +1,6 @@
 # Getting Started
 
-From an empty clone to a working stack, an order you can watch move through it, and the three things
+From an empty clone to a working stack, an order you can watch move through it, and the four things
 most likely to go wrong on the way.
 
 > **Read this at a keyboard.** It is in order and every command is meant to be run. Each stage says
@@ -16,7 +16,7 @@ most likely to go wrong on the way.
 
 | Requirement | Why it exists |
 | --- | --- |
-| **Docker Desktop / Engine, with Compose v2** | Runs all 35 containers. The only hard requirement |
+| **Docker Desktop / Engine, with Compose v2** | Runs all 36 containers. The only hard requirement |
 | **10 GB allocated to Docker** | Oracle alone is capped at 2.5 GB and will not start below ~8 GB total. This is the number that decides whether the first run works |
 | **~20 GB free disk** | Images (~33 GB unpruned), the Maven build cache, and 19 volumes |
 | **BuildKit** (default in current Docker) | The Dockerfile uses cache mounts to keep the Maven repository out of the image. Without it, every rebuild re-downloads the world |
@@ -52,12 +52,36 @@ Created docker/compose/.env from .env.example.
 Starting the full stack: infrastructure, services, observability, simulation.
 First run pulls several GB of images, compiles both services and initialises
 Oracle; expect ten minutes or so. Subsequent runs are much faster.
+
+Bringing up Vault and unsealing it...
+Initialising Vault (5 key shares, threshold 3)...
+Unseal keys and root token written to docker/compose/.vault-keys.json (0600, git-ignored).
+Unsealing with 3 of 5 keys...
+Vault is unsealed.
+Seeding Vault:
+  audit device      enabled -> /vault/logs/audit.log
+  kv-v2 at secret/  enabled
+  ...
+Seed complete.
 ...
   595s elapsed
 Stack is ready.
 ```
 
 followed by a health table and a list of URLs.
+
+**Why the Vault step is there.** The two services read every credential they use from Vault, and this
+Vault runs a real server rather than `-dev` — so it starts **sealed** and serves nothing until three
+of its five unseal keys are presented. `infra.sh up` does that for you on every start, not only the
+first. If you ever start containers with plain `docker compose`, you have to do it yourself:
+
+```bash
+./scripts/vault.sh unseal
+```
+
+The keys land in `docker/compose/.vault-keys.json`, which is git-ignored and readable only by you.
+That file opens every secret in the stack — see [`docs/Vault.md` §4](docs/Vault.md#4-the-bootstrap-problem)
+for why moving to Vault shrank that problem rather than removing it.
 
 **How long.** First run ≈ 10 minutes: several GB of images, a full Maven build of both services, and
 Oracle initialising a database from scratch. Later runs are 2–4 minutes.
@@ -75,16 +99,21 @@ healthy. Watch it if you want proof it is working:
 ./scripts/infra.sh health
 ```
 
-**What you should see** — 35 lines. 23 `healthy`, 9 `running / none`, 3 `exited / exit 0`:
+**What you should see** — 36 lines. 24 `healthy`, 9 `running / none`, 3 `exited / exit 0`:
 
 ```
 CONTAINER            STATE        HEALTH
 lab-order-service    running      healthy
 lab-inventory-service running     healthy
 lab-oracle           running      healthy
+lab-vault            running      healthy
 lab-kafka-init       exited       exit 0
 ...
 ```
+
+`lab-vault` reporting `healthy` means something more specific than "the process is up": its
+healthcheck is `vault status`, which succeeds **only when Vault is unsealed**. A sealed Vault shows
+`unhealthy` here, and `infra.sh up` unsealed it for you before starting the services.
 
 Three of them **should** be `exited`. `kafka-init`, `minio-init` and `consul-init` create topics,
 buckets and configuration and then finish. `exit 0` is success; any other code is not, and
@@ -265,7 +294,7 @@ right after placing an order is usually a flush delay, not a missing trace.
 
 ---
 
-## 6. The three things most likely to go wrong
+## 6. The four things most likely to go wrong
 
 ### 1. Oracle does not become healthy — and everything blames something else
 
@@ -339,6 +368,32 @@ inconvenience a human and cannot break the system.
 
 `./scripts/infra.sh urls` always prints the effective addresses.
 
+### 4. Vault is sealed, and nothing says so
+
+Not a first-run problem — it is the *second*-run problem, and it is the one that wastes the most time
+because the stack looks fine.
+
+Vault boots sealed after every restart: a machine reboot, a Docker Desktop restart, or starting
+containers with `docker compose up` instead of `./scripts/infra.sh up`. When that happens, every
+already-running service keeps working — it holds its credentials and its open database connections —
+so `infra.sh health` is green, latency is flat and no request fails.
+
+The failure arrives later, when a service restarts and cannot start:
+
+```
+VaultLoginException: Cannot login using AppRole: Vault is sealed
+```
+
+Check it before believing anything else:
+
+```bash
+./scripts/vault.sh status     # Sealed  true
+./scripts/vault.sh unseal
+```
+
+This is why `./scripts/vault.sh status` is one of the six checks at the top of
+[`docs/Runbook.md`](docs/Runbook.md).
+
 ### On Windows, one extra thing
 
 Git Bash rewrites arguments that look like absolute POSIX paths, so a hand-written `docker exec` fails
@@ -403,6 +458,7 @@ Then:
 | Practise, and check your answers | [docs/Exercises.md](docs/Exercises.md) |
 | Understand the design | [docs/Architecture.md](docs/Architecture.md), [docs/SequenceDiagrams.md](docs/SequenceDiagrams.md) |
 | Break it methodically | [docs/Simulation.md](docs/Simulation.md), [docs/FailureSimulation.md](docs/FailureSimulation.md) |
+| See where the credentials come from | [docs/Vault.md](docs/Vault.md) |
 
 ---
 
